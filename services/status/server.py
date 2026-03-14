@@ -7,6 +7,7 @@ import re
 import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
+import urllib.request
 
 PORT = 8765
 
@@ -234,12 +235,13 @@ HTML = """<!DOCTYPE html>
     poll();
     setInterval(poll, 10000);
     setTimeout(() => {
-      const s = document.getElementById('log-scroll');
-      s.scrollTop = s.scrollHeight;
-    }, 300);
+      const s = document.getElementsByClassName('log-scroll')[0];
+      if (s) s.scrollTop = s.scrollHeight;
+    }, 100);
   </script>
 </body>
-</html>"""
+</html>
+"""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -260,6 +262,24 @@ class Handler(BaseHTTPRequestHandler):
       self.send_header("Content-Length", str(len(body)))
       self.end_headers()
       self.wfile.write(body)
+
+    elif self.path.startswith("/scratch"):
+      # Proxy to scratch service on port 8766
+      try:
+        target_url = f"http://127.0.0.1:8766{self.path}"
+        req = urllib.request.Request(target_url, headers={"User-Agent": "seb-proxy"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+          body = resp.read()
+          self.send_response(resp.code)
+          for header, value in resp.headers.items():
+            self.send_header(header, value)
+          self.end_headers()
+          self.wfile.write(body)
+      except Exception as e:
+        self.send_response(502)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(f"Bad Gateway: {e}".encode())
 
     else:
       self.send_response(302)
