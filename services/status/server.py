@@ -55,21 +55,34 @@ def get_status() -> dict:
   }
 
 
+_LOGGER_ABBREV = {
+  "__main__":              "main",
+  "listeners.signal":      "signal",
+  "listeners.telegram":    "telegram",
+  "sdk_session":           "session",
+  "sdk_backend":           "backend",
+  "manager":               "mgr",
+  "httpx":                 "httpx",
+  "anthropic._base_client":"anthropic",
+}
+
+
+def _abbrev_logger(logger: str) -> str:
+  s = logger.removeprefix("seb.")
+  return _LOGGER_ABBREV.get(s, s.split(".")[-1])
+
+
 def parse_logs(raw: str) -> list[dict]:
-  """Parse journal lines into structured log entries."""
   entries = []
   for line in raw.splitlines():
     m = _PYLOG_RE.match(line)
     if m:
       time, level, logger, message = m.group(1), m.group(2), m.group(3), m.group(4)
-      # Shorten logger name: seb.listeners.signal → listeners.signal
-      short_logger = logger.removeprefix("seb.")
-      entries.append({"time": time, "level": level, "logger": short_logger, "msg": message})
+      entries.append({"time": time[:-3], "level": level[:4], "src": _abbrev_logger(logger), "msg": message})
     else:
-      # Traceback lines etc — strip journal prefix if present, show as continuation
       stripped = _JOURNAL_PREFIX_RE.sub("", line).strip()
       if stripped:
-        entries.append({"time": "", "level": "RAW", "logger": "", "msg": stripped})
+        entries.append({"time": "", "level": "", "src": "", "msg": stripped})
   return entries
 
 
@@ -86,158 +99,144 @@ HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>seb status</title>
+  <title>seb</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
       background: #0d0d0d;
       color: #e0e0e0;
       font-family: 'SF Mono', 'Fira Code', monospace;
-      padding: 2rem;
-      max-width: 1100px;
+      font-size: 13px;
+      padding: 1.25rem;
+      max-width: 900px;
       margin: 0 auto;
-    }
-    h1 { font-size: 1.4rem; color: #fff; margin-bottom: 0.25rem; }
-    .meta { font-size: 0.72rem; color: #555; margin-bottom: 2rem; }
-    .meta span { color: #888; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
-    .card {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-      padding: 1rem 1.25rem;
-    }
-    .card h2 { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: #555; margin-bottom: 0.5rem; }
-    .badge {
-      display: inline-block;
-      font-size: 0.82rem;
-      font-weight: 600;
-      padding: 0.2rem 0.6rem;
-      border-radius: 4px;
-    }
-    .badge.active { background: #0c3; color: #000; }
-    .badge.inactive, .badge.failed { background: #c33; color: #fff; }
-    .badge.unknown { background: #444; color: #ccc; }
-    .logs-card {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
+    }}
+    h1 {{ font-size: 1.1rem; color: #fff; display: inline; }}
+    .meta {{ display: inline; font-size: 0.7rem; color: #555; margin-left: 0.75rem; }}
+    .meta span {{ color: #777; }}
+    .top {{ margin-bottom: 1rem; }}
+    .badges {{ display: flex; gap: 0.6rem; margin-top: 0.75rem; flex-wrap: wrap; }}
+    .badge {{
+      font-size: 0.72rem; font-weight: 600;
+      padding: 0.15rem 0.55rem; border-radius: 3px;
+    }}
+    .badge-label {{ font-size: 0.65rem; color: #555; margin-right: 0.3rem; }}
+    .badge.active {{ background: #0c3; color: #000; }}
+    .badge.failed, .badge.inactive {{ background: #c33; color: #fff; }}
+    .badge.unknown {{ background: #333; color: #888; }}
+    .logs-card {{
+      background: #141414;
+      border: 1px solid #242424;
+      border-radius: 6px;
       overflow: hidden;
-    }
-    .logs-header {
-      padding: 0.75rem 1.25rem;
-      border-bottom: 1px solid #2a2a2a;
-      font-size: 0.65rem;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: #555;
-    }
-    .log-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.72rem;
-      line-height: 1.5;
-    }
-    .log-scroll {
-      max-height: 540px;
+    }}
+    .log-scroll {{
+      height: 70vh;
       overflow-y: auto;
-    }
-    .log-table td { padding: 0.1rem 0.5rem; vertical-align: top; white-space: pre-wrap; word-break: break-all; }
-    .log-table .td-time { color: #555; white-space: nowrap; width: 6.5rem; padding-left: 1rem; }
-    .log-table .td-level { white-space: nowrap; width: 5rem; font-weight: 600; }
-    .log-table .td-logger { color: #666; white-space: nowrap; width: 16rem; }
-    .log-table .td-msg { color: #ccc; }
-    .log-table tr.raw td { color: #555; font-size: 0.67rem; padding-left: 3rem; }
-    .log-table tr.raw .td-msg { color: #666; }
-    .level-INFO .td-level { color: #5af; }
-    .level-ERROR .td-level, .level-CRITICAL .td-level { color: #f66; }
-    .level-ERROR .td-msg, .level-CRITICAL .td-msg { color: #f99; }
-    .level-WARNING .td-level { color: #fa0; }
-    .level-DEBUG .td-level { color: #555; }
-    .note { font-size: 0.7rem; color: #444; margin-top: 1rem; text-align: right; }
+    }}
+    .log-row {{
+      display: grid;
+      grid-template-columns: 5.2rem 3rem 7rem 1fr;
+      align-items: baseline;
+      padding: 0.08rem 0.75rem;
+      border-bottom: 1px solid #1a1a1a;
+      line-height: 1.55;
+    }}
+    .log-row:last-child {{ border-bottom: none; }}
+    .log-row.raw {{
+      grid-template-columns: 1fr;
+      padding-left: 2rem;
+    }}
+    .l-time {{ color: #3a3a3a; font-size: 0.68rem; white-space: nowrap; }}
+    .l-lvl  {{ font-size: 0.68rem; font-weight: 700; white-space: nowrap; }}
+    .l-src  {{ color: #4a4a4a; font-size: 0.68rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 0.5rem; }}
+    .l-msg  {{ color: #bbb; font-size: 0.72rem; word-break: break-word; }}
+    .raw .l-msg {{ color: #444; font-size: 0.67rem; }}
+    .INFO  .l-lvl {{ color: #48a; }}
+    .WARN  .l-lvl {{ color: #c80; }}
+    .ERRO  .l-lvl, .CRIT .l-lvl {{ color: #c44; }}
+    .ERRO  .l-msg, .CRIT .l-msg {{ color: #d88; }}
+    .DEBU  .l-lvl {{ color: #444; }}
+    /* mobile: hide time + src, tighter padding */
+    @media (max-width: 540px) {{
+      body {{ padding: 0.75rem; }}
+      .log-row {{
+        grid-template-columns: 2.8rem 1fr;
+        padding: 0.1rem 0.5rem;
+      }}
+      .log-row.raw {{ padding-left: 1rem; }}
+      .l-time, .l-src {{ display: none; }}
+    }}
   </style>
 </head>
 <body>
-  <h1>seb</h1>
-  <p class="meta">updated <span id="updated">—</span> &nbsp;·&nbsp; polling every 10s</p>
-
-  <div class="grid">
-    <div class="card">
-      <h2>seb daemon</h2>
-      <span class="badge" id="seb-badge">—</span>
-    </div>
-    <div class="card">
-      <h2>signal-cli</h2>
-      <span class="badge" id="signal-badge">—</span>
+  <div class="top">
+    <h1>seb</h1>
+    <span class="meta">updated <span id="updated">—</span></span>
+    <div class="badges">
+      <span><span class="badge-label">daemon</span><span class="badge" id="seb-badge">—</span></span>
+      <span><span class="badge-label">signal-cli</span><span class="badge" id="signal-badge">—</span></span>
     </div>
   </div>
 
   <div class="logs-card">
-    <div class="logs-header">recent logs</div>
     <div class="log-scroll" id="log-scroll">
-      <table class="log-table"><tbody id="log-body"></tbody></table>
+      <div id="log-body"></div>
     </div>
   </div>
 
-  <p class="note">sammcgrail/seb</p>
-
   <script>
-    function badgeCls(s) {
-      if (s.includes('active') && !s.includes('inactive') || s.includes('running')) return 'active';
+    function badgeCls(s) {{
+      if ((s.includes('active') && !s.includes('inactive')) || s.includes('running')) return 'active';
       if (s.includes('failed') || s.includes('inactive') || s.includes('exited')) return 'failed';
       return 'unknown';
-    }
+    }}
 
-    function renderLogs(entries) {
-      const tbody = document.getElementById('log-body');
+    function esc(s) {{
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }}
+
+    function renderLogs(entries) {{
+      const body = document.getElementById('log-body');
       const scroll = document.getElementById('log-scroll');
-      const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
+      const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
 
-      tbody.innerHTML = entries.map(e => {
-        if (e.level === 'RAW') {
-          return `<tr class="raw"><td class="td-time"></td><td class="td-level"></td><td class="td-logger"></td><td class="td-msg">${esc(e.msg)}</td></tr>`;
-        }
-        return `<tr class="level-${e.level}">
-          <td class="td-time">${esc(e.time)}</td>
-          <td class="td-level">${e.level}</td>
-          <td class="td-logger">${esc(e.logger)}</td>
-          <td class="td-msg">${esc(e.msg)}</td>
-        </tr>`;
-      }).join('');
+      body.innerHTML = entries.map(e => {{
+        if (!e.level) {{
+          return `<div class="log-row raw"><span class="l-msg">${{esc(e.msg)}}</span></div>`;
+        }}
+        const lvl = e.level.substring(0,4);
+        return `<div class="log-row ${{lvl}}">
+          <span class="l-time">${{esc(e.time)}}</span>
+          <span class="l-lvl">${{lvl}}</span>
+          <span class="l-src">${{esc(e.src)}}</span>
+          <span class="l-msg">${{esc(e.msg)}}</span>
+        </div>`;
+      }}).join('');
 
       if (atBottom) scroll.scrollTop = scroll.scrollHeight;
-    }
+    }}
 
-    function esc(s) {
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
-
-    function setBadge(id, text) {
-      const el = document.getElementById(id);
-      el.textContent = text;
-      el.className = 'badge ' + badgeCls(text);
-    }
-
-    function poll() {
+    function poll() {{
       fetch('/seb/data')
         .then(r => r.json())
-        .then(d => {
+        .then(d => {{
           document.getElementById('updated').textContent = d.updated;
-          setBadge('seb-badge', d.seb);
-          setBadge('signal-badge', d.signal_cli);
+          const sb = document.getElementById('seb-badge');
+          sb.textContent = d.seb; sb.className = 'badge ' + badgeCls(d.seb);
+          const sg = document.getElementById('signal-badge');
+          sg.textContent = d.signal_cli; sg.className = 'badge ' + badgeCls(d.signal_cli);
           renderLogs(d.logs);
-        })
-        .catch(() => {});
-    }
+        }})
+        .catch(() => {{}});
+    }}
 
     poll();
     setInterval(poll, 10000);
-
-    // Initial scroll to bottom
-    setTimeout(() => {
+    setTimeout(() => {{
       const s = document.getElementById('log-scroll');
       s.scrollTop = s.scrollHeight;
-    }, 200);
+    }}, 300);
   </script>
 </body>
 </html>"""
