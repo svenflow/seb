@@ -46,6 +46,7 @@ class SignalListener:
     """Listen for incoming messages via WebSocket, reconnecting on drop."""
     ws_endpoint = f"{self._ws_url}/v1/receive/{self._our_number}"
     logger.info("Signal listener connecting to %s", ws_endpoint)
+    await asyncio.sleep(10)  # give signal-cli Docker container time to start
 
     while True:
       try:
@@ -53,8 +54,8 @@ class SignalListener:
       except asyncio.CancelledError:
         raise
       except Exception:
-        logger.exception("Signal WebSocket error, reconnecting in 5s")
-        await asyncio.sleep(5)
+        logger.exception("Signal WebSocket error, reconnecting in 10s")
+        await asyncio.sleep(10)
 
   async def _listen(self, url: str) -> None:
     # httpx doesn't support WebSocket; use the websockets library
