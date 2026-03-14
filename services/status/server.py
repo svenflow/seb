@@ -42,7 +42,7 @@ def get_status() -> dict:
     seb_active = "active" if result.strip() else "inactive"
 
   signal_status = run(["docker", "inspect", "--format",
-    "{.State.Status} ({.State.Health.Status})", "seb-signal-cli-1"])
+    "{{.State.Status}} ({{.State.Health.Status}})", "seb-signal-cli-1"])
 
   raw_logs = run(["journalctl", "_SYSTEMD_USER_UNIT=seb.service",
     "-n", "80", "--no-pager", "-o", "short-iso"])
@@ -244,7 +244,7 @@ HTML = """<!DOCTYPE html>
 
 class Handler(BaseHTTPRequestHandler):
   def do_GET(self):
-    if self.path in ("/seb/data",):
+    if self.path in ("/seb/data", "/data"):
       s = get_status()
       body = json.dumps(s).encode()
       self.send_response(200)
@@ -253,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(body)
 
-    elif self.path in ("/seb", "/seb/", "/"):
+    elif self.path in ("/seb", "/seb/", "/", ""):
       body = HTML.encode()
       self.send_response(200)
       self.send_header("Content-Type", "text/html; charset=utf-8")
