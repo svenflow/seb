@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
 """seb status page — served at /seb on the server IP."""
 
-import subprocess
 import json
+import os
+import re
+import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from datetime import datetime
+from datetime import datetime, timezone
 
 PORT = 8765
+
+# Journal line pattern:
+# 2026-03-14T05:44:26+00:00 hostname proc[pid]: 2026-03-14 05:44:26,657 [LEVEL] logger: message
+# or just raw output (tracebacks, etc.)
+_PYLOG_RE = re.compile(
+  r"^\S+\s+\S+\s+\S+:\s+"           # journal prefix (ts host proc[pid]: )
+  r"\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}),\d+\s+"  # python ts → group 1 (HH:MM:SS)
+  r"\[(INFO|ERROR|WARNING|DEBUG|CRITICAL)\]\s+"        # level → group 2
+  r"([\w\.]+):\s+"                   # logger name → group 3
+  r"(.+)$"                           # message → group 4
+)
+_JOURNAL_PREFIX_RE = re.compile(r"^\S+\s+\S+\s+\S+:\s+")
 
 
 def run(cmd: list[str], timeout: int = 5, env=None) -> str:
@@ -18,139 +32,45 @@ def run(cmd: list[str], timeout: int = 5, env=None) -> str:
 
 
 def get_status() -> dict:
-  # Check seb via pgrep (works from any context) and user dbus
   env = {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/0/bus", "HOME": "/root"}
   seb_active = run(
     ["systemctl", "--user", "is-active", "seb"],
-    timeout=5, env={**__import__("os").environ, **env}
+    timeout=5, env={**os.environ, **env}
   )
   if seb_active not in ("active", "inactive", "failed", "activating"):
-    # fallback: check if process is running
     result = run(["pgrep", "-f", "seb.main"])
     seb_active = "active" if result.strip() else "inactive"
 
   signal_status = run(["docker", "inspect", "--format",
     "{{.State.Status}} ({{.State.Health.Status}})", "seb-signal-cli-1"])
 
-  # Read journal by unit match — works from root without --user --machine
-  logs = run(["journalctl", "_SYSTEMD_USER_UNIT=seb.service",
-    "-n", "40", "--no-pager", "-o", "short-iso"])
+  raw_logs = run(["journalctl", "_SYSTEMD_USER_UNIT=seb.service",
+    "-n", "80", "--no-pager", "-o", "short-iso"])
 
   return {
     "seb": seb_active,
     "signal_cli": signal_status,
-    "logs": logs,
-    "updated": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+    "logs": parse_logs(raw_logs),
+    "updated": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
   }
 
 
-HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="15">
-  <title>seb status</title>
-  <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{
-      background: #0d0d0d;
-      color: #e0e0e0;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      padding: 2rem;
-      max-width: 960px;
-      margin: 0 auto;
-    }}
-    h1 {{ font-size: 1.4rem; color: #fff; margin-bottom: 0.25rem; }}
-    .updated {{ font-size: 0.75rem; color: #666; margin-bottom: 2rem; }}
-    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }}
-    .card {{
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-      padding: 1rem 1.25rem;
-    }}
-    .card h2 {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: #666; margin-bottom: 0.5rem; }}
-    .badge {{
-      display: inline-block;
-      font-size: 0.85rem;
-      font-weight: 600;
-      padding: 0.2rem 0.6rem;
-      border-radius: 4px;
-    }}
-    .badge.active {{ background: #0f3; color: #000; }}
-    .badge.inactive, .badge.failed {{ background: #f33; color: #fff; }}
-    .badge.unknown {{ background: #555; color: #fff; }}
-    .logs-card {{
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-      padding: 1rem 1.25rem;
-    }}
-    .logs-card h2 {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: #666; margin-bottom: 0.75rem; }}
-    pre {{
-      font-size: 0.72rem;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      word-break: break-all;
-      color: #ccc;
-      max-height: 500px;
-      overflow-y: auto;
-    }}
-    .err {{ color: #f77; }}
-    .warn {{ color: #fa0; }}
-    .info {{ color: #7af; }}
-    .note {{ font-size: 0.72rem; color: #555; margin-top: 1rem; text-align: right; }}
-  </style>
-</head>
-<body>
-  <h1>seb</h1>
-  <p class="updated">updated {updated} &mdash; refreshes every 15s</p>
-
-  <div class="grid">
-    <div class="card">
-      <h2>seb daemon</h2>
-      <span class="badge {seb_cls}">{seb}</span>
-    </div>
-    <div class="card">
-      <h2>signal-cli</h2>
-      <span class="badge {signal_cls}">{signal_cli}</span>
-    </div>
-  </div>
-
-  <div class="logs-card">
-    <h2>recent logs (last 40 lines)</h2>
-    <pre>{logs_html}</pre>
-  </div>
-
-  <p class="note">seb &mdash; sammcgrail/seb</p>
-  <script>
-    // Scroll log to bottom on load
-    window.addEventListener('load', function() {{
-      var pre = document.querySelector('pre');
-      if (pre) pre.scrollTop = pre.scrollHeight;
-    }});
-  </script>
-</body>
-</html>"""
-
-
-def colorize_logs(logs: str) -> str:
-  lines = []
-  for line in logs.splitlines():
-    if "ERROR" in line or "error" in line.lower() or "Traceback" in line:
-      lines.append(f'<span class="err">{_esc(line)}</span>')
-    elif "WARNING" in line or "WARN" in line:
-      lines.append(f'<span class="warn">{_esc(line)}</span>')
-    elif "INFO" in line:
-      lines.append(f'<span class="info">{_esc(line)}</span>')
+def parse_logs(raw: str) -> list[dict]:
+  """Parse journal lines into structured log entries."""
+  entries = []
+  for line in raw.splitlines():
+    m = _PYLOG_RE.match(line)
+    if m:
+      time, level, logger, message = m.group(1), m.group(2), m.group(3), m.group(4)
+      # Shorten logger name: seb.listeners.signal → listeners.signal
+      short_logger = logger.removeprefix("seb.")
+      entries.append({"time": time, "level": level, "logger": short_logger, "msg": message})
     else:
-      lines.append(_esc(line))
-  return "\n".join(lines)
-
-
-def _esc(s: str) -> str:
-  return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+      # Traceback lines etc — strip journal prefix if present, show as continuation
+      stripped = _JOURNAL_PREFIX_RE.sub("", line).strip()
+      if stripped:
+        entries.append({"time": "", "level": "RAW", "logger": "", "msg": stripped})
+  return entries
 
 
 def badge_cls(status: str) -> str:
@@ -161,35 +81,197 @@ def badge_cls(status: str) -> str:
   return "unknown"
 
 
+HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>seb status</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d0d0d;
+      color: #e0e0e0;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      padding: 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 1.4rem; color: #fff; margin-bottom: 0.25rem; }
+    .meta { font-size: 0.72rem; color: #555; margin-bottom: 2rem; }
+    .meta span { color: #888; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+    }
+    .card h2 { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: #555; margin-bottom: 0.5rem; }
+    .badge {
+      display: inline-block;
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 0.2rem 0.6rem;
+      border-radius: 4px;
+    }
+    .badge.active { background: #0c3; color: #000; }
+    .badge.inactive, .badge.failed { background: #c33; color: #fff; }
+    .badge.unknown { background: #444; color: #ccc; }
+    .logs-card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .logs-header {
+      padding: 0.75rem 1.25rem;
+      border-bottom: 1px solid #2a2a2a;
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #555;
+    }
+    .log-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.72rem;
+      line-height: 1.5;
+    }
+    .log-scroll {
+      max-height: 540px;
+      overflow-y: auto;
+    }
+    .log-table td { padding: 0.1rem 0.5rem; vertical-align: top; white-space: pre-wrap; word-break: break-all; }
+    .log-table .td-time { color: #555; white-space: nowrap; width: 6.5rem; padding-left: 1rem; }
+    .log-table .td-level { white-space: nowrap; width: 5rem; font-weight: 600; }
+    .log-table .td-logger { color: #666; white-space: nowrap; width: 16rem; }
+    .log-table .td-msg { color: #ccc; }
+    .log-table tr.raw td { color: #555; font-size: 0.67rem; padding-left: 3rem; }
+    .log-table tr.raw .td-msg { color: #666; }
+    .level-INFO .td-level { color: #5af; }
+    .level-ERROR .td-level, .level-CRITICAL .td-level { color: #f66; }
+    .level-ERROR .td-msg, .level-CRITICAL .td-msg { color: #f99; }
+    .level-WARNING .td-level { color: #fa0; }
+    .level-DEBUG .td-level { color: #555; }
+    .note { font-size: 0.7rem; color: #444; margin-top: 1rem; text-align: right; }
+  </style>
+</head>
+<body>
+  <h1>seb</h1>
+  <p class="meta">updated <span id="updated">—</span> &nbsp;·&nbsp; polling every 10s</p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>seb daemon</h2>
+      <span class="badge" id="seb-badge">—</span>
+    </div>
+    <div class="card">
+      <h2>signal-cli</h2>
+      <span class="badge" id="signal-badge">—</span>
+    </div>
+  </div>
+
+  <div class="logs-card">
+    <div class="logs-header">recent logs</div>
+    <div class="log-scroll" id="log-scroll">
+      <table class="log-table"><tbody id="log-body"></tbody></table>
+    </div>
+  </div>
+
+  <p class="note">sammcgrail/seb</p>
+
+  <script>
+    function badgeCls(s) {
+      if (s.includes('active') && !s.includes('inactive') || s.includes('running')) return 'active';
+      if (s.includes('failed') || s.includes('inactive') || s.includes('exited')) return 'failed';
+      return 'unknown';
+    }
+
+    function renderLogs(entries) {
+      const tbody = document.getElementById('log-body');
+      const scroll = document.getElementById('log-scroll');
+      const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
+
+      tbody.innerHTML = entries.map(e => {
+        if (e.level === 'RAW') {
+          return `<tr class="raw"><td class="td-time"></td><td class="td-level"></td><td class="td-logger"></td><td class="td-msg">${esc(e.msg)}</td></tr>`;
+        }
+        return `<tr class="level-${e.level}">
+          <td class="td-time">${esc(e.time)}</td>
+          <td class="td-level">${e.level}</td>
+          <td class="td-logger">${esc(e.logger)}</td>
+          <td class="td-msg">${esc(e.msg)}</td>
+        </tr>`;
+      }).join('');
+
+      if (atBottom) scroll.scrollTop = scroll.scrollHeight;
+    }
+
+    function esc(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function setBadge(id, text) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.className = 'badge ' + badgeCls(text);
+    }
+
+    function poll() {
+      fetch('/seb/data')
+        .then(r => r.json())
+        .then(d => {
+          document.getElementById('updated').textContent = d.updated;
+          setBadge('seb-badge', d.seb);
+          setBadge('signal-badge', d.signal_cli);
+          renderLogs(d.logs);
+        })
+        .catch(() => {});
+    }
+
+    poll();
+    setInterval(poll, 10000);
+
+    // Initial scroll to bottom
+    setTimeout(() => {
+      const s = document.getElementById('log-scroll');
+      s.scrollTop = s.scrollHeight;
+    }, 200);
+  </script>
+</body>
+</html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
   def do_GET(self):
-    if self.path not in ("/seb", "/seb/", "/"):
+    if self.path in ("/seb/data",):
+      s = get_status()
+      body = json.dumps(s).encode()
+      self.send_response(200)
+      self.send_header("Content-Type", "application/json")
+      self.send_header("Content-Length", str(len(body)))
+      self.end_headers()
+      self.wfile.write(body)
+
+    elif self.path in ("/seb", "/seb/", "/"):
+      body = HTML.encode()
+      self.send_response(200)
+      self.send_header("Content-Type", "text/html; charset=utf-8")
+      self.send_header("Content-Length", str(len(body)))
+      self.end_headers()
+      self.wfile.write(body)
+
+    else:
       self.send_response(302)
       self.send_header("Location", "/seb")
       self.end_headers()
-      return
-
-    s = get_status()
-    body = HTML.format(
-      updated=s["updated"],
-      seb=_esc(s["seb"]),
-      seb_cls=badge_cls(s["seb"]),
-      signal_cli=_esc(s["signal_cli"]),
-      signal_cls=badge_cls(s["signal_cli"]),
-      logs_html=colorize_logs(s["logs"]),
-    ).encode()
-
-    self.send_response(200)
-    self.send_header("Content-Type", "text/html; charset=utf-8")
-    self.send_header("Content-Length", str(len(body)))
-    self.end_headers()
-    self.wfile.write(body)
 
   def log_message(self, fmt, *args):
-    pass  # suppress access logs
+    pass
 
 
 if __name__ == "__main__":
   server = HTTPServer(("0.0.0.0", PORT), Handler)
-  print(f"seb status server on http://127.0.0.1:{PORT}")
+  print(f"seb status server on http://0.0.0.0:{PORT}")
   server.serve_forever()
