@@ -1,0 +1,15 @@
+[Unit]
+Description=seb memory-search daemon
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/seb/services/memory-search
+ExecStart=/usr/local/bin/bun run index.ts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=signal-cli JSON-RPC daemon
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/signal-cli -a ${SIGNAL_NUMBER} daemon --socket ${SIGNAL_SOCKET_PATH} --receive-mode on-start
+EnvironmentFile=%h/seb/.env
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

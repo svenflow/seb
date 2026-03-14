@@ -1,0 +1,12 @@
+{
+  "name": "memory-search",
+  "version": "0.1.0",
+  "description": "SQLite FTS5 memory service for seb",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun --watch run index.ts"
+  },
+  "dependencies": {
+    "bun-sqlite": "^1.0.0"
+  }
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=seb — personal AI assistant daemon
+After=network-online.target signal-cli.service
+Wants=signal-cli.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/seb
+EnvironmentFile=%h/seb/.env
+ExecStart=%h/.local/bin/uv run seb
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

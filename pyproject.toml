@@ -1,0 +1,39 @@
+[project]
+name = "seb"
+version = "0.1.0"
+description = "Personal AI assistant daemon — Telegram + Signal + Claude Agent SDK"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.50.0",
+    "python-telegram-bot>=22.0",
+    "python-dotenv>=1.0",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+    "croniter>=3.0",
+    "websockets>=14.0",
+]
+
+[project.scripts]
+seb = "seb.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.9",
+    "ty>=0.0.1a14",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+]
+
+[tool.ruff]
+line-length = 100
+indent-width = 2
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
