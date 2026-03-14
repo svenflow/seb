@@ -133,7 +133,8 @@ class SDKSession:
     logger.debug("Session %s: calling Claude (%d msgs)", self.session_key, len(self._messages))
 
     # Agentic loop: call Claude, handle tool use, repeat until stop
-    while True:
+    MAX_ITERATIONS = 20
+    for _iter in range(MAX_ITERATIONS):
       response = await self._client.messages.create(
         model=self._model,
         max_tokens=8192,
@@ -165,6 +166,8 @@ class SDKSession:
       # Unknown stop reason — break to avoid infinite loop
       logger.warning("Session %s: unexpected stop_reason %r", self.session_key, response.stop_reason)
       break
+    else:
+      logger.warning("Session %s: hit max iterations (%d), stopping", self.session_key, MAX_ITERATIONS)
 
   async def _handle_tool_calls(
     self, content: list[Any], msg: QueuedMessage
