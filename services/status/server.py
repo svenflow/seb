@@ -42,7 +42,7 @@ def get_status() -> dict:
     seb_active = "active" if result.strip() else "inactive"
 
   signal_status = run(["docker", "inspect", "--format",
-    "{{.State.Status}} ({{.State.Health.Status}})", "seb-signal-cli-1"])
+    "{.State.Status} ({.State.Health.Status})", "seb-signal-cli-1"])
 
   raw_logs = run(["journalctl", "_SYSTEMD_USER_UNIT=seb.service",
     "-n", "80", "--no-pager", "-o", "short-iso"])
@@ -101,8 +101,8 @@ HTML = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>seb</title>
   <style>
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
       background: #0d0d0d;
       color: #e0e0e0;
       font-family: 'SF Mono', 'Fira Code', monospace;
@@ -110,63 +110,63 @@ HTML = """<!DOCTYPE html>
       padding: 1.25rem;
       max-width: 900px;
       margin: 0 auto;
-    }}
-    h1 {{ font-size: 1.1rem; color: #fff; display: inline; }}
-    .meta {{ display: inline; font-size: 0.7rem; color: #555; margin-left: 0.75rem; }}
-    .meta span {{ color: #777; }}
-    .top {{ margin-bottom: 1rem; }}
-    .badges {{ display: flex; gap: 0.6rem; margin-top: 0.75rem; flex-wrap: wrap; }}
-    .badge {{
+    }
+    h1 { font-size: 1.1rem; color: #fff; display: inline; }
+    .meta { display: inline; font-size: 0.7rem; color: #555; margin-left: 0.75rem; }
+    .meta span { color: #777; }
+    .top { margin-bottom: 1rem; }
+    .badges { display: flex; gap: 0.6rem; margin-top: 0.75rem; flex-wrap: wrap; }
+    .badge {
       font-size: 0.72rem; font-weight: 600;
       padding: 0.15rem 0.55rem; border-radius: 3px;
-    }}
-    .badge-label {{ font-size: 0.65rem; color: #555; margin-right: 0.3rem; }}
-    .badge.active {{ background: #0c3; color: #000; }}
-    .badge.failed, .badge.inactive {{ background: #c33; color: #fff; }}
-    .badge.unknown {{ background: #333; color: #888; }}
-    .logs-card {{
+    }
+    .badge-label { font-size: 0.65rem; color: #555; margin-right: 0.3rem; }
+    .badge.active { background: #0c3; color: #000; }
+    .badge.failed, .badge.inactive { background: #c33; color: #fff; }
+    .badge.unknown { background: #333; color: #888; }
+    .logs-card {
       background: #141414;
       border: 1px solid #242424;
       border-radius: 6px;
       overflow: hidden;
-    }}
-    .log-scroll {{
+    }
+    .log-scroll {
       height: 70vh;
       overflow-y: auto;
-    }}
-    .log-row {{
+    }
+    .log-row {
       display: grid;
       grid-template-columns: 5.2rem 3rem 7rem 1fr;
       align-items: baseline;
       padding: 0.08rem 0.75rem;
       border-bottom: 1px solid #1a1a1a;
       line-height: 1.55;
-    }}
-    .log-row:last-child {{ border-bottom: none; }}
-    .log-row.raw {{
+    }
+    .log-row:last-child { border-bottom: none; }
+    .log-row.raw {
       grid-template-columns: 1fr;
       padding-left: 2rem;
-    }}
-    .l-time {{ color: #3a3a3a; font-size: 0.68rem; white-space: nowrap; }}
-    .l-lvl  {{ font-size: 0.68rem; font-weight: 700; white-space: nowrap; }}
-    .l-src  {{ color: #4a4a4a; font-size: 0.68rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 0.5rem; }}
-    .l-msg  {{ color: #bbb; font-size: 0.72rem; word-break: break-word; }}
-    .raw .l-msg {{ color: #444; font-size: 0.67rem; }}
-    .INFO  .l-lvl {{ color: #48a; }}
-    .WARN  .l-lvl {{ color: #c80; }}
-    .ERRO  .l-lvl, .CRIT .l-lvl {{ color: #c44; }}
-    .ERRO  .l-msg, .CRIT .l-msg {{ color: #d88; }}
-    .DEBU  .l-lvl {{ color: #444; }}
+    }
+    .l-time { color: #3a3a3a; font-size: 0.68rem; white-space: nowrap; }
+    .l-lvl  { font-size: 0.68rem; font-weight: 700; white-space: nowrap; }
+    .l-src  { color: #4a4a4a; font-size: 0.68rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 0.5rem; }
+    .l-msg  { color: #bbb; font-size: 0.72rem; word-break: break-word; }
+    .raw .l-msg { color: #444; font-size: 0.67rem; }
+    .INFO  .l-lvl { color: #48a; }
+    .WARN  .l-lvl { color: #c80; }
+    .ERRO  .l-lvl, .CRIT .l-lvl { color: #c44; }
+    .ERRO  .l-msg, .CRIT .l-msg { color: #d88; }
+    .DEBU  .l-lvl { color: #444; }
     /* mobile: hide time + src, tighter padding */
-    @media (max-width: 540px) {{
-      body {{ padding: 0.75rem; }}
-      .log-row {{
+    @media (max-width: 540px) {
+      body { padding: 0.75rem; }
+      .log-row {
         grid-template-columns: 2.8rem 1fr;
         padding: 0.1rem 0.5rem;
-      }}
-      .log-row.raw {{ padding-left: 1rem; }}
-      .l-time, .l-src {{ display: none; }}
-    }}
+      }
+      .log-row.raw { padding-left: 1rem; }
+      .l-time, .l-src { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -186,57 +186,57 @@ HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    function badgeCls(s) {{
+    function badgeCls(s) {
       if ((s.includes('active') && !s.includes('inactive')) || s.includes('running')) return 'active';
       if (s.includes('failed') || s.includes('inactive') || s.includes('exited')) return 'failed';
       return 'unknown';
-    }}
+    }
 
-    function esc(s) {{
+    function esc(s) {
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }}
+    }
 
-    function renderLogs(entries) {{
+    function renderLogs(entries) {
       const body = document.getElementById('log-body');
       const scroll = document.getElementById('log-scroll');
       const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60;
 
-      body.innerHTML = entries.map(e => {{
-        if (!e.level) {{
-          return `<div class="log-row raw"><span class="l-msg">${{esc(e.msg)}}</span></div>`;
-        }}
+      body.innerHTML = entries.map(e => {
+        if (!e.level) {
+          return `<div class="log-row raw"><span class="l-msg">${esc(e.msg)}</span></div>`;
+        }
         const lvl = e.level.substring(0,4);
-        return `<div class="log-row ${{lvl}}">
-          <span class="l-time">${{esc(e.time)}}</span>
-          <span class="l-lvl">${{lvl}}</span>
-          <span class="l-src">${{esc(e.src)}}</span>
-          <span class="l-msg">${{esc(e.msg)}}</span>
+        return `<div class="log-row ${lvl}">
+          <span class="l-time">${esc(e.time)}</span>
+          <span class="l-lvl">${lvl}</span>
+          <span class="l-src">${esc(e.src)}</span>
+          <span class="l-msg">${esc(e.msg)}</span>
         </div>`;
-      }}).join('');
+      }).join('');
 
       if (atBottom) scroll.scrollTop = scroll.scrollHeight;
-    }}
+    }
 
-    function poll() {{
+    function poll() {
       fetch('/seb/data')
         .then(r => r.json())
-        .then(d => {{
+        .then(d => {
           document.getElementById('updated').textContent = d.updated;
           const sb = document.getElementById('seb-badge');
           sb.textContent = d.seb; sb.className = 'badge ' + badgeCls(d.seb);
           const sg = document.getElementById('signal-badge');
           sg.textContent = d.signal_cli; sg.className = 'badge ' + badgeCls(d.signal_cli);
           renderLogs(d.logs);
-        }})
-        .catch(() => {{}});
-    }}
+        })
+        .catch(() => {});
+    }
 
     poll();
     setInterval(poll, 10000);
-    setTimeout(() => {{
+    setTimeout(() => {
       const s = document.getElementById('log-scroll');
       s.scrollTop = s.scrollHeight;
-    }}, 300);
+    }, 300);
   </script>
 </body>
 </html>"""
