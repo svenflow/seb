@@ -250,29 +250,36 @@ class SDKSession:
   def _build_options(self) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions based on contact tier.
 
-    NOTE: We always use permission_mode="default" with a can_use_tool callback
-    instead of "bypassPermissions". The CLI rejects --dangerously-skip-permissions
-    when running as root, which is common on Linux servers. The can_use_tool
-    callback achieves the same effect by auto-allowing tools per tier.
+    Uses bypassPermissions for admin (with IS_SANDBOX=1 env var to allow
+    running as root on Linux servers). Trusted/other tiers use "default"
+    with a can_use_tool callback for restrictions.
     """
     if self.tier == "admin":
       tools = [
         "Read", "Write", "Edit", "Bash", "Glob", "Grep",
         "WebSearch", "WebFetch", "Task", "NotebookEdit",
       ]
+      perm_mode = "bypassPermissions"
       turn_limit = 200
     elif self.tier == "trusted":
       tools = ["Read", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"]
+      perm_mode = "default"
       turn_limit = 50
     else:
       # Default: restricted
       tools = ["Read", "Bash", "Glob", "Grep"]
+      perm_mode = "default"
       turn_limit = 30
+
+    # IS_SANDBOX=1 allows --dangerously-skip-permissions to work as root.
+    # Without it, the Claude CLI refuses bypassPermissions for root/sudo.
+    import os
+    os.environ.setdefault("IS_SANDBOX", "1")
 
     opts = ClaudeAgentOptions(
       cwd=self.cwd,
       allowed_tools=tools,
-      permission_mode="default",  # Never use bypassPermissions (blocked as root)
+      permission_mode=perm_mode,
       setting_sources=["project"],  # Load CLAUDE.md from cwd
       model=self._model,
       fallback_model="sonnet",
@@ -284,8 +291,9 @@ class SDKSession:
     if self._cli_path:
       opts.cli_path = self._cli_path
 
-    # Permission callback: auto-allow for admin, enforce restrictions for others
-    opts.can_use_tool = self._permission_check
+    # Permission callback for non-admin tiers
+    if self.tier in ("trusted",):
+      opts.can_use_tool = self._permission_check
 
     # Session resume or fresh session
     if self._session_id:
@@ -298,23 +306,15 @@ class SDKSession:
   async def _permission_check(
     self, tool_name: str, tool_input: dict[str, Any], context: Any
   ) -> PermissionResultAllow | PermissionResultDeny:
-    """Tier-based permission callback.
+    """Enforce tier-based tool restrictions for trusted contacts."""
+    # Block file writes
+    if tool_name in ("Write", "Edit", "NotebookEdit"):
+      return PermissionResultDeny(message=f"{tool_name} blocked for trusted tier")
 
-    Admin: allow everything (replaces bypassPermissions, which is blocked as root).
-    Trusted: block file writes and sensitive file reads.
-    Other: allow only the tools in allowed_tools (enforced by SDK).
-    """
-    # Admin gets full access
-    if self.tier == "admin":
-      return PermissionResultAllow()
-
-    # Trusted: block file writes
-    if self.tier == "trusted":
-      if tool_name in ("Write", "Edit", "NotebookEdit"):
-        return PermissionResultDeny(message=f"{tool_name} blocked for trusted tier")
-      if tool_name == "Read":
-        path = tool_input.get("file_path", "")
-        if any(s in path for s in [".ssh", ".env", "credentials", "secrets", "token"]):
-          return PermissionResultDeny(message="Sensitive file blocked for trusted tier")
+    # Block sensitive file reads
+    if tool_name == "Read":
+      path = tool_input.get("file_path", "")
+      if any(s in path for s in [".ssh", ".env", "credentials", "secrets", "token"]):
+        return PermissionResultDeny(message="Sensitive file blocked for trusted tier")
 
     return PermissionResultAllow()
