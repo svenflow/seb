@@ -74,6 +74,8 @@ class Manager:
       import sys
       sys.exit(0)
     elif command == "HEALME":
-      # Clear all sessions and let them be recreated on next message
-      logger.info("HEALME: resetting sessions")
+      # Full reset: stop all sessions, then clear saved IDs so they aren't
+      # resumed with potentially broken state on next message.
+      logger.info("HEALME: resetting sessions and clearing saved IDs")
       await self._backend.stop_all()
+      self._backend.clear_saved_session_ids()

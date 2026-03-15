@@ -7,10 +7,10 @@ no API key needed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from seb.sdk_session import SDKSession
 
@@ -65,6 +65,14 @@ def _build_group_system_prompt(
   )
 
 
+_TIER_RANKS = {"admin": 3, "trusted": 2, "default": 1, "unknown": 0}
+
+
+def _tier_rank(tier: str) -> int:
+  """Return a numeric rank for a tier so we can compare them."""
+  return _TIER_RANKS.get(tier, 1)
+
+
 class SDKBackend:
   """Manages a pool of Claude Agent SDK sessions, one per contact or group."""
 
@@ -73,6 +81,7 @@ class SDKBackend:
     self._cli_path = cli_path
     self._sessions: dict[str, SDKSession] = {}
     self._saved_ids: dict[str, str] = self._load_session_ids()
+    self._lock = asyncio.Lock()
 
   def _load_session_ids(self) -> dict[str, str]:
     if SESSIONS_FILE.exists():
@@ -92,6 +101,13 @@ class SDKBackend:
     SESSIONS_FILE.write_text(json.dumps(ids, indent=2))
     logger.info("Saved %d session IDs", len(ids))
 
+  def clear_saved_session_ids(self) -> None:
+    """Delete saved session IDs so sessions are created fresh on next message."""
+    if SESSIONS_FILE.exists():
+      SESSIONS_FILE.unlink()
+    self._saved_ids.clear()
+    logger.info("Cleared saved session IDs")
+
   async def inject_message(
     self,
     platform: str,
@@ -102,8 +118,15 @@ class SDKBackend:
   ) -> None:
     """Route a DM to the right session, creating one if needed."""
     key = f"{platform}:{sender_id}"
-    if key not in self._sessions:
-      self._sessions[key] = await self._create_session(key, tier, platform, sender_id)
+    async with self._lock:
+      session = self._sessions.get(key)
+      if session is not None and not session.is_alive():
+        logger.warning("Dead session detected for %s, recreating", key)
+        await session.stop()
+        del self._sessions[key]
+        session = None
+      if session is None:
+        self._sessions[key] = await self._create_session(key, tier, platform, sender_id)
 
     # Wrap message with metadata so Claude knows the context
     wrapped = (
@@ -123,9 +146,23 @@ class SDKBackend:
     """Route a group message to the group session, creating one if needed."""
     # Group sessions are keyed by the group chat_id, not the sender
     key = f"{platform}:{chat_id}"
-    if key not in self._sessions:
-      # Use the highest tier seen (admin > trusted) for the group session
-      self._sessions[key] = await self._create_group_session(key, tier, platform, chat_id)
+    async with self._lock:
+      session = self._sessions.get(key)
+      if session is not None and not session.is_alive():
+        logger.warning("Dead group session detected for %s, recreating", key)
+        await session.stop()
+        del self._sessions[key]
+        session = None
+      if session is not None and _tier_rank(tier) > _tier_rank(session.tier):
+        logger.info(
+          "Upgrading group session %s tier from %s to %s",
+          key, session.tier, tier,
+        )
+        await session.stop()
+        del self._sessions[key]
+        session = None
+      if session is None:
+        self._sessions[key] = await self._create_group_session(key, tier, platform, chat_id)
 
     # Wrap with sender info so Claude knows who's talking
     wrapped = (
@@ -141,12 +178,13 @@ class SDKBackend:
     transcript_dir = TRANSCRIPTS_DIR / platform / sender_id.replace("+", "_")
     transcript_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write a CLAUDE.md with the system prompt for this contact
+    # Only write CLAUDE.md for fresh sessions (no saved ID to resume)
     claude_md = transcript_dir / "CLAUDE.md"
-    prompt = _build_system_prompt(tier, platform, sender_id, self._model)
-    claude_md.write_text(prompt)
-
     saved_id = self._saved_ids.get(key)
+    if not claude_md.exists() or saved_id is None:
+      prompt = _build_system_prompt(tier, platform, sender_id, self._model)
+      claude_md.write_text(prompt)
+
     session = SDKSession(
       session_key=key,
       tier=tier,
@@ -175,12 +213,13 @@ class SDKBackend:
     # Extract the raw group ID for the send script
     raw_group_id = chat_id.replace("group:", "")
 
-    # Write a CLAUDE.md with group-specific system prompt
+    # Only write CLAUDE.md for fresh sessions (no saved ID to resume)
     claude_md = transcript_dir / "CLAUDE.md"
-    prompt = _build_group_system_prompt(raw_group_id, platform, self._model)
-    claude_md.write_text(prompt)
-
     saved_id = self._saved_ids.get(key)
+    if not claude_md.exists() or saved_id is None:
+      prompt = _build_group_system_prompt(raw_group_id, platform, self._model)
+      claude_md.write_text(prompt)
+
     session = SDKSession(
       session_key=key,
       tier=tier,
