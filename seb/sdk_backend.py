@@ -98,7 +98,9 @@ class SDKBackend:
       if s.session_id is not None
     }
     SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSIONS_FILE.write_text(json.dumps(ids, indent=2))
+    tmp_file = SESSIONS_FILE.with_suffix(".tmp")
+    tmp_file.write_text(json.dumps(ids, indent=2))
+    tmp_file.rename(SESSIONS_FILE)
     logger.info("Saved %d session IDs", len(ids))
 
   def clear_saved_session_ids(self) -> None:
@@ -127,13 +129,14 @@ class SDKBackend:
         session = None
       if session is None:
         self._sessions[key] = await self._create_session(key, tier, platform, sender_id)
+      target = self._sessions[key]
 
     # Wrap message with metadata so Claude knows the context
     wrapped = (
       f"<message platform='{platform}' sender='{sender_id}' "
       f"chat='{chat_id}' tier='{tier}'>\n{text}\n</message>"
     )
-    await self._sessions[key].inject(wrapped)
+    await target.inject(wrapped)
 
   async def inject_group_message(
     self,
@@ -153,6 +156,11 @@ class SDKBackend:
         await session.stop()
         del self._sessions[key]
         session = None
+      # Group sessions keep the highest tier seen: if a higher-tier user joins,
+      # the session is recreated with elevated permissions. This means permissions
+      # never downgrade within a group — a deliberate trade-off for simplicity,
+      # since mixed-tier groups are common and the alternative (per-message
+      # permission switching) would add significant complexity.
       if session is not None and _tier_rank(tier) > _tier_rank(session.tier):
         logger.info(
           "Upgrading group session %s tier from %s to %s",
@@ -163,13 +171,14 @@ class SDKBackend:
         session = None
       if session is None:
         self._sessions[key] = await self._create_group_session(key, tier, platform, chat_id)
+      target = self._sessions[key]
 
     # Wrap with sender info so Claude knows who's talking
     wrapped = (
       f"<message platform='{platform}' sender='{sender_id}' "
       f"chat='{chat_id}' tier='{tier}' type='group'>\n{text}\n</message>"
     )
-    await self._sessions[key].inject(wrapped)
+    await target.inject(wrapped)
 
   async def _create_session(
     self, key: str, tier: str, platform: str, sender_id: str
@@ -233,7 +242,8 @@ class SDKBackend:
     return session
 
   async def stop_all(self) -> None:
-    self.save_session_ids()
-    for session in self._sessions.values():
-      await session.stop()
-    self._sessions.clear()
+    async with self._lock:
+      self.save_session_ids()
+      for session in self._sessions.values():
+        await session.stop()
+      self._sessions.clear()

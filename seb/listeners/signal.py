@@ -179,6 +179,9 @@ class SignalListener:
         return
 
       if not text:
+        attachments = dm.get("attachments", [])
+        if attachments:
+          logger.info("signal: dropping attachment-only message from %s (%d attachment(s))", sender, len(attachments))
         return
 
       logger.debug("signal message from %s: %r", sender, text[:80])

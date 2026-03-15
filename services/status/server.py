@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import urllib.request
 
 PORT = 8765
+BIND_HOST = os.environ.get("STATUS_BIND_HOST", "127.0.0.1")
+AUTH_TOKEN = os.environ.get("STATUS_AUTH_TOKEN")
 
 # Journal line pattern:
 # 2026-03-14T05:44:26+00:00 hostname proc[pid]: 2026-03-14 05:44:26,657 [LEVEL] logger: message
@@ -245,7 +247,22 @@ HTML = """<!DOCTYPE html>
 
 
 class Handler(BaseHTTPRequestHandler):
+  def _check_auth(self) -> bool:
+    """Return True if request is authorized. Sends 401 and returns False otherwise."""
+    if not AUTH_TOKEN:
+      return True
+    auth_header = self.headers.get("Authorization", "")
+    if auth_header == f"Bearer {AUTH_TOKEN}":
+      return True
+    self.send_response(401)
+    self.send_header("Content-Type", "text/plain")
+    self.end_headers()
+    self.wfile.write(b"Unauthorized")
+    return False
+
   def do_GET(self):
+    if not self._check_auth():
+      return
     if self.path in ("/seb/data", "/data"):
       s = get_status()
       body = json.dumps(s).encode()
@@ -291,6 +308,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-  server = HTTPServer(("0.0.0.0", PORT), Handler)
-  print(f"seb status server on http://0.0.0.0:{PORT}")
+  server = HTTPServer((BIND_HOST, PORT), Handler)
+  print(f"seb status server on http://{BIND_HOST}:{PORT}")
   server.serve_forever()
