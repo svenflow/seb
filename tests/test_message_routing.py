@@ -119,6 +119,7 @@ async def test_bare_admin_command_ignored_in_group():
 
     with patch("seb.manager.get_config") as mock_cfg:
         mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        mock_cfg.return_value.bot_name = "seb"
         await manager.on_message("signal", "+admin", "group:abc", "HEALME")
 
     # Should be forwarded as a group message, not intercepted
@@ -193,6 +194,7 @@ async def test_seb_non_command_in_group_forwarded():
 
     with patch("seb.manager.get_config") as mock_cfg:
         mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        mock_cfg.return_value.bot_name = "seb"
         await manager.on_message("signal", "+admin", "group:abc", "seb hello")
 
     backend.inject_group_message.assert_awaited_once()
@@ -205,6 +207,7 @@ async def test_seb_command_non_admin_in_group_forwarded():
 
     with patch("seb.manager.get_config") as mock_cfg:
         mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
         await manager.on_message("signal", "+trusted", "group:abc", "seb restart")
 
     backend.inject_group_message.assert_awaited_once()
@@ -274,6 +277,7 @@ async def test_group_message_routed_to_inject_group():
 
     with patch("seb.manager.get_config") as mock_cfg:
         mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        mock_cfg.return_value.bot_name = "seb"
         await manager.on_message("signal", "+sender", "group:mygroup", "hey team")
 
     backend.inject_group_message.assert_awaited_once_with(
@@ -441,3 +445,118 @@ async def test_reply_fn_receives_group_chat_id():
     reply_fn.assert_awaited_once()
     call_args = reply_fn.call_args
     assert call_args[0][1] == "group:mygrp"  # chat_id, not sender
+
+
+# ---------------------------------------------------------------------------
+# Group message relevance filtering
+# ---------------------------------------------------------------------------
+
+
+async def test_group_msg_starting_with_seb_routed():
+    """'seb do X' should be routed to the bot session."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+trusted", "group:abc", "seb do the thing")
+
+    backend.inject_group_message.assert_awaited_once()
+
+
+async def test_group_msg_hey_seb_routed():
+    """'hey seb' should be routed to the bot session."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+trusted", "group:abc", "hey seb can you help")
+
+    backend.inject_group_message.assert_awaited_once()
+
+
+async def test_group_msg_seb_mid_sentence_routed():
+    """Message containing 'seb' mid-sentence should be routed."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message(
+            "signal", "+trusted", "group:abc", "can you ask seb to check the server"
+        )
+
+    backend.inject_group_message.assert_awaited_once()
+
+
+async def test_group_msg_sven_do_x_dropped():
+    """'sven do X' from non-admin should be dropped (no bot mention)."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+trusted", "group:abc", "sven do the thing")
+
+    backend.inject_group_message.assert_not_awaited()
+
+
+async def test_group_msg_random_no_names_dropped():
+    """Random message with no names from non-admin should be dropped."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+trusted", "group:abc", "what time is dinner?")
+
+    backend.inject_group_message.assert_not_awaited()
+
+
+async def test_group_msg_admin_no_names_routed():
+    """Admin messages without names should be routed."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+admin", "group:abc", "what time is dinner?")
+
+    backend.inject_group_message.assert_awaited_once()
+
+
+async def test_group_msg_admin_starting_with_sven_dropped():
+    """Admin messages starting with 'sven' should be dropped (directed at someone else)."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+admin", "group:abc", "sven, check your email")
+
+    backend.inject_group_message.assert_not_awaited()
+
+
+async def test_group_msg_word_boundary_no_false_positive():
+    """'sebastian' should NOT match the bot name 'seb' (word boundary check)."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+trusted", "group:abc", "sebastian is great")
+
+    backend.inject_group_message.assert_not_awaited()
+
+
+async def test_group_msg_dm_not_filtered():
+    """DMs should NOT go through the group relevance filter."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        mock_cfg.return_value.bot_name = "seb"
+        await manager.on_message("signal", "+trusted", "+trusted", "random message no name")
+
+    backend.inject_message.assert_awaited_once()

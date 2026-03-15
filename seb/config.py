@@ -41,6 +41,9 @@ class Config:
   trusted_telegram_ids: set[int] = field(default_factory=set)
   trusted_signal_numbers: set[str] = field(default_factory=set)
 
+  # Bot identity — used for group message filtering (case-insensitive)
+  bot_name: str = field(default_factory=lambda: os.getenv("BOT_NAME", "seb"))
+
   # Services
   memory_service_url: str = field(
     default_factory=lambda: os.getenv("MEMORY_SERVICE_URL", "http://localhost:7890")

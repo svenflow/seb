@@ -20,6 +20,10 @@ ADMIN_COMMANDS = {"HEALME", "RESTART", "REBOOT"}
 # Pattern to match "seb <command>" in group chats (case-insensitive)
 _GROUP_COMMAND_RE = re.compile(r"^seb\s+(\w+)\s*$", re.IGNORECASE)
 
+# Pattern to detect a message directed at someone (e.g. "sven, do X" or "sven: do X")
+# Only matches when followed by comma or colon — a clear addressing pattern.
+_DIRECTED_AT_RE = re.compile(r"^([a-zA-Z]{2,})[,:]", re.UNICODE)
+
 
 class Manager:
   """Routes incoming messages to the right session or handles admin commands."""
@@ -74,6 +78,9 @@ class Manager:
       return
 
     if is_group:
+      if not self._is_relevant_group_message(text, tier):
+        logger.debug("Dropping irrelevant group message from %s: %r", sender_id, text[:50])
+        return
       await self._backend.inject_group_message(
         platform=platform,
         sender_id=sender_id,
@@ -89,6 +96,39 @@ class Manager:
         text=text,
         tier=tier,
       )
+
+  def _is_relevant_group_message(self, text: str, tier: str) -> bool:
+    """Check whether a group message is relevant to this bot.
+
+    Returns True if the message should be routed to the bot's session:
+    - Message starts with the bot's name (direct address)
+    - Message mentions the bot's name anywhere
+    - Sender is admin and message doesn't start with another name
+    Returns False otherwise (message is irrelevant noise).
+    """
+    cfg = get_config()
+    bot_name = cfg.bot_name
+    # Word-boundary match for the bot's name anywhere in the text
+    bot_pattern = re.compile(rf"\b{re.escape(bot_name)}\b", re.IGNORECASE)
+
+    # 1. Message mentions the bot anywhere → relevant
+    if bot_pattern.search(text):
+      return True
+
+    # 2. Admin catch-all: route unless message is directed at another name
+    if tier == "admin":
+      m = _DIRECTED_AT_RE.match(text.strip())
+      if m:
+        leading_name = m.group(1)
+        # If the leading name is the bot's name, it's relevant (already caught above)
+        # If it's a different name, it's directed at someone else
+        if not re.match(rf"^{re.escape(bot_name)}$", leading_name, re.IGNORECASE):
+          return False
+      # Admin message without a leading name → relevant
+      return True
+
+    # 3. Non-admin, no bot mention → irrelevant
+    return False
 
   async def _reply(self, platform: str, chat_id: str, text: str) -> None:
     """Send a reply via the registered reply function, if available."""
