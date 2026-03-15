@@ -155,7 +155,10 @@ class SignalListener:
   async def _handle(self, data: dict[str, Any]) -> None:
     try:
       envelope = data.get("envelope", {})
-      sender = envelope.get("sourceNumber")
+      # Prefer sourceNumber (E.164 phone), fall back to sourceUuid.
+      # In group chats, signal-cli may only know the UUID if the sender
+      # isn't in this account's contacts.
+      sender = envelope.get("sourceNumber") or envelope.get("sourceUuid")
       if not sender:
         return
 

@@ -49,13 +49,18 @@ class Manager:
       logger.warning("Unknown platform: %s", platform)
       return
 
-    # Drop unknown contacts silently
-    if tier == "unknown":
-      logger.info("Dropping message from unknown %s:%s", platform, sender_id)
-      return
-
     # Intercept admin commands
     is_group = chat_id.startswith("group:")
+
+    # Drop unknown contacts in DMs; in groups, treat them as "default" tier
+    # since they're a member of the group (Signal requires invites to join).
+    if tier == "unknown":
+      if is_group:
+        logger.info("Unknown sender %s in group %s, routing as default tier", sender_id, chat_id)
+        tier = "default"
+      else:
+        logger.info("Dropping DM from unknown %s:%s", platform, sender_id)
+        return
     stripped = text.strip().upper()
 
     # In DMs: bare command (e.g. "RESTART")
