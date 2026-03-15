@@ -44,9 +44,11 @@ def main() -> None:
 
   # signal-cli-rest-api v2/send expects group IDs in "group.<base64>" format
   # under the "recipients" field.
-  # The group_id parameter is already base64-encoded, so we just prepend the
-  # "group." prefix — no further encoding needed.
-  encoded_group = "group." + group_id
+  # The group_id parameter is the internal_id (e.g. "+Cl2qBM0Eb71...").
+  # The API expects "group." + base64(internal_id), which matches the "id"
+  # field from /v1/groups.
+  import base64
+  encoded_group = "group." + base64.b64encode(group_id.encode()).decode()
   payload = {
     "number": signal_number,
     "recipients": [encoded_group],
