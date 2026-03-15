@@ -12,6 +12,7 @@ state/sessions.json
 state/*.json
 services/memory-search/data/
 signal-data/
+transcripts/
 *.db
 *.sqlite
 node_modules/

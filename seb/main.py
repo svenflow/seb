@@ -23,25 +23,15 @@ _telegram_listener: TelegramListener | None = None
 _signal_listener: SignalListener | None = None
 
 
-async def send_fn(platform: str, chat_id_or_recipient: str, text: str) -> None:
-  """Unified send function passed to SDKBackend."""
-  if platform == "telegram" and _telegram_listener is not None:
-    await _telegram_listener.send(chat_id_or_recipient, text)
-  elif platform == "signal" and _signal_listener is not None:
-    await _signal_listener.send(chat_id_or_recipient, text)
-  else:
-    logger.error("send_fn: unknown platform %r or listener not ready", platform)
-
-
 async def run() -> None:
   global _telegram_listener, _signal_listener
 
   cfg = get_config()
 
+  # Agent SDK backend — no API key needed, uses OAuth via `claude login`
   backend = SDKBackend(
-    send_fn=send_fn,
     model=cfg.claude_model,
-    anthropic_api_key=cfg.anthropic_api_key,
+    cli_path=cfg.claude_cli_path,
   )
   manager = Manager(backend)
 
@@ -70,7 +60,7 @@ async def run() -> None:
   loop.add_signal_handler(signal.SIGINT, _shutdown)
   loop.add_signal_handler(signal.SIGTERM, _shutdown)
 
-  logger.info("seb starting up")
+  logger.info("seb starting up (Agent SDK, model=%s)", cfg.claude_model)
 
   try:
     await asyncio.gather(*tasks)

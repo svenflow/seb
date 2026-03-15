@@ -1,31 +1,34 @@
-"""Session pool — one SDKSession per contact, created on demand."""
+"""Session pool — one SDKSession per contact, created on demand.
+
+Uses the Claude Agent SDK (ClaudeSDKClient) instead of the raw Anthropic API.
+Each session runs as a Claude Code subprocess with OAuth authentication —
+no API key needed.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
 
-import anthropic
-
-from seb.sdk_session import QueuedMessage, SDKSession
+from seb.sdk_session import SDKSession
 
 logger = logging.getLogger(__name__)
 
-# send_fn(platform, chat_id_or_recipient, text)
-type SendFn = Callable[[str, str, str], Coroutine[Any, Any, None]]
-
 SESSIONS_FILE = Path(__file__).parent.parent / "state" / "sessions.json"
+TRANSCRIPTS_DIR = Path(__file__).parent.parent / "transcripts"
+SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 
-SOUL = """
+SOUL = """\
 You are seb — a personal AI assistant running on a Linux server.
 You are reachable via Telegram and Signal.
 You have access to the server (via Bash tool) and can help with anything.
 
 Rules:
-- You MUST call send-telegram or send-signal to reply. Messages are NEVER sent automatically.
+- To reply via Signal, run: {scripts_dir}/send-signal "<recipient>" "<message>"
+- To reply via Telegram, run: {scripts_dir}/send-telegram "<chat_id>" "<message>"
+- You MUST call the appropriate send script via Bash to reply. Messages are NEVER sent automatically.
 - Always reply in the same channel the message came from (same platform, same chat_id/recipient).
 - Be concise. Think carefully before calling tools.
 - Admin tier contacts have full access. Trusted contacts have standard access.
@@ -33,25 +36,19 @@ Rules:
 
 
 def _build_system_prompt(tier: str, platform: str, sender_id: str, model: str) -> str:
-  from seb.sdk_session import MODEL_NAMES
-  model_name = MODEL_NAMES.get(model, model)
   return (
-    f"{SOUL}\n\n"
+    f"{SOUL.format(scripts_dir=SCRIPTS_DIR)}\n\n"
     f"<contact tier='{tier}' platform='{platform}' id='{sender_id}' />\n"
-    f"<model id='{model}' name='{model_name}' />\n"
-    f"<model_switching>User can switch models by prefixing messages: --haiku (default, fast/cheap), "
-    f"--sonnet (balanced), --opus (smartest). Switches are sticky for 30 minutes then revert to haiku. "
-    f"If asked what model you are, answer accurately using the model tag above.</model_switching>"
+    f"<model id='{model}' />\n"
   )
 
 
 class SDKBackend:
-  """Manages a pool of Claude sessions, one per (platform, sender)."""
+  """Manages a pool of Claude Agent SDK sessions, one per (platform, sender)."""
 
-  def __init__(self, send_fn: SendFn, model: str, anthropic_api_key: str) -> None:
-    self._send_fn = send_fn
+  def __init__(self, model: str, cli_path: Path | None = None) -> None:
     self._model = model
-    self._client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+    self._cli_path = cli_path
     self._sessions: dict[str, SDKSession] = {}
     self._saved_ids: dict[str, str] = self._load_session_ids()
 
@@ -65,33 +62,56 @@ class SDKBackend:
 
   def save_session_ids(self) -> None:
     ids = {
-      key: s._session_id
+      key: s.session_id
       for key, s in self._sessions.items()
-      if s._session_id is not None
+      if s.session_id is not None
     }
     SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SESSIONS_FILE.write_text(json.dumps(ids, indent=2))
     logger.info("Saved %d session IDs", len(ids))
 
-  async def inject_message(self, msg: QueuedMessage) -> None:
-    key = f"{msg.platform}:{msg.sender_id}"
+  async def inject_message(
+    self,
+    platform: str,
+    sender_id: str,
+    chat_id: str,
+    text: str,
+    tier: str,
+  ) -> None:
+    """Route a message to the right session, creating one if needed."""
+    key = f"{platform}:{sender_id}"
     if key not in self._sessions:
-      self._sessions[key] = self._create_session(key, msg)
+      self._sessions[key] = await self._create_session(key, tier, platform, sender_id)
 
-    await self._sessions[key].inject(msg)
+    # Wrap message with metadata so Claude knows the context
+    wrapped = (
+      f"<message platform='{platform}' sender='{sender_id}' "
+      f"chat='{chat_id}' tier='{tier}'>\n{text}\n</message>"
+    )
+    await self._sessions[key].inject(wrapped)
 
-  def _create_session(self, key: str, msg: QueuedMessage) -> SDKSession:
-    system_prompt = _build_system_prompt(msg.tier, msg.platform, msg.sender_id, self._model)
+  async def _create_session(
+    self, key: str, tier: str, platform: str, sender_id: str
+  ) -> SDKSession:
+    # Create transcript directory for this contact
+    transcript_dir = TRANSCRIPTS_DIR / platform / sender_id.replace("+", "_")
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write a CLAUDE.md with the system prompt for this contact
+    claude_md = transcript_dir / "CLAUDE.md"
+    prompt = _build_system_prompt(tier, platform, sender_id, self._model)
+    claude_md.write_text(prompt)
+
     saved_id = self._saved_ids.get(key)
     session = SDKSession(
       session_key=key,
-      send_fn=self._send_fn,
-      client=self._client,
+      tier=tier,
+      cwd=str(transcript_dir),
       model=self._model,
-      system_prompt=system_prompt,
+      cli_path=self._cli_path,
       session_id=saved_id,
     )
-    session.start()
+    await session.start()
     logger.info("Created session for %s (resumed=%s)", key, saved_id is not None)
     return session
 

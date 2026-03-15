@@ -1,5 +1,7 @@
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -7,9 +9,13 @@ load_dotenv()
 
 @dataclass
 class Config:
-  # Anthropic
-  anthropic_api_key: str = field(default_factory=lambda: os.environ["ANTHROPIC_API_KEY"])
-  claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001"))
+  # Claude Agent SDK — uses OAuth via `claude login`, no API key needed.
+  # Model passed to ClaudeAgentOptions (e.g. "opus", "sonnet", "haiku").
+  claude_model: str = field(default_factory=lambda: os.getenv("CLAUDE_MODEL", "haiku"))
+  # Path to the `claude` CLI binary. If not set, uses the default system path.
+  claude_cli_path: Path | None = field(
+    default_factory=lambda: Path(os.environ["CLAUDE_CLI_PATH"]) if os.getenv("CLAUDE_CLI_PATH") else None
+  )
 
   # Telegram (optional — omit TELEGRAM_BOT_TOKEN to disable)
   telegram_bot_token: str | None = field(
