@@ -75,8 +75,9 @@ class Manager:
 
     if is_group:
       if not self._is_relevant_group_message(text, tier):
-        logger.debug("Dropping irrelevant group message from %s: %r", sender_id, text[:50])
+        logger.info("Dropping irrelevant group message from %s (tier=%s): %r", sender_id, tier, text[:50])
         return
+      logger.info("Routing group message from %s (tier=%s) to %s", sender_id, tier, chat_id)
       await self._backend.inject_group_message(
         platform=platform,
         sender_id=sender_id,
@@ -85,6 +86,7 @@ class Manager:
         tier=tier,
       )
     else:
+      logger.info("Routing DM from %s (tier=%s)", sender_id, tier)
       await self._backend.inject_message(
         platform=platform,
         sender_id=sender_id,
