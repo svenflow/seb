@@ -148,6 +148,12 @@ class SDKSession:
             await asyncio.wait_for(process.wait(), timeout=2.0)
           except asyncio.TimeoutError:
             process.kill()
+        # Close the transport to prevent "Event loop is closed" errors
+        # during garbage collection after the event loop shuts down.
+        if hasattr(transport, "close"):
+          transport.close()
+          # Give the transport time to finish cleanup while loop is alive
+          await asyncio.sleep(0.1)
     except Exception as e:
       logger.warning("Session %s: subprocess kill error: %s", self.session_key, e)
     finally:
