@@ -134,8 +134,8 @@ class SignalListener:
       if group_info:
         group_id = group_info.get("groupId", "")
         group_type = group_info.get("type")
-        # If this looks like an invitation or we're not yet a member, try joining
-        if group_type in ("DELIVER", "UPDATE") or not text:
+        # Only try to accept on group updates (not DELIVER, which is every normal message)
+        if group_type == "UPDATE" or not text:
           # Fire-and-forget: try to accept in case we're still pending
           asyncio.create_task(self._try_accept_if_pending(group_id))
 

@@ -42,10 +42,15 @@ def main() -> None:
 
   api_url = os.environ.get("SIGNAL_API_URL", "http://127.0.0.1:6001").rstrip("/")
 
-  # signal-cli-rest-api v2/send supports groups via "base64_group" field
+  # signal-cli-rest-api v2/send expects group IDs in "group.<base64>" format
+  # under the "recipients" field
+  import base64
+  # The group_id comes in as the internal_id (raw base64). Convert to the
+  # "group.<base64-of-base64>" format the API expects.
+  encoded_group = "group." + base64.b64encode(group_id.encode()).decode()
   payload = {
     "number": signal_number,
-    "base64_group": group_id,
+    "recipients": [encoded_group],
     "message": text,
   }
 
