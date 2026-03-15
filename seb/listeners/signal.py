@@ -43,6 +43,39 @@ class SignalListener:
       resp.raise_for_status()
     logger.debug("signal send → %s: %r", recipient, text[:80])
 
+  async def send_to_chat(self, chat_id: str, text: str) -> None:
+    """Send a message to a chat_id (DM or group).
+
+    For groups, chat_id is "group:<internal_id>". For DMs, it's the phone number.
+    The internal_id is already base64, so we just need to look up the
+    signal-cli group ID format ("group.<base64-of-internal-id>") via the
+    groups API.
+    """
+    if chat_id.startswith("group:"):
+      internal_id = chat_id.removeprefix("group:")
+      # Look up the group's API ID from the groups list
+      group_api_id = await self._resolve_group_id(internal_id)
+      if group_api_id:
+        await self.send(group_api_id, text)
+      else:
+        logger.warning("Could not resolve group ID for %s", internal_id)
+    else:
+      await self.send(chat_id, text)
+
+  async def _resolve_group_id(self, internal_id: str) -> str | None:
+    """Look up a group's API ID from its internal_id."""
+    url = f"{self._base_url}/v1/groups/{self._our_number}"
+    try:
+      async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        for group in resp.json():
+          if group.get("internal_id") == internal_id:
+            return group.get("id")
+    except Exception as e:
+      logger.warning("Failed to resolve group ID: %s", e)
+    return None
+
   async def accept_group_invite(self, group_id: str) -> bool:
     """Accept a pending group invitation via the REST API.
 
