@@ -73,15 +73,20 @@ async def run() -> None:
   loop.add_signal_handler(signal.SIGINT, _shutdown)
   loop.add_signal_handler(signal.SIGTERM, _shutdown)
 
-  logger.info("seb starting up (Agent SDK, model=%s)", cfg.claude_model)
+  logger.info("=" * 60)
+  logger.info("seb STARTED (Agent SDK, model=%s)", cfg.claude_model)
+  logger.info("=" * 60)
 
   try:
     await asyncio.gather(*tasks)
   except asyncio.CancelledError:
-    logger.info("seb shutting down")
+    pass
   finally:
+    logger.info("=" * 60)
+    logger.info("seb SHUTTING DOWN")
+    logger.info("=" * 60)
     await backend.stop_all()
-    logger.info("seb stopped")
+    logger.info("seb STOPPED")
     # Force garbage collection while the event loop is still open.
     # Without this, subprocess transports get GC'd after asyncio.run()
     # closes the loop, causing noisy "Event loop is closed" tracebacks
