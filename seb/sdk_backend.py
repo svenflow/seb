@@ -1,4 +1,4 @@
-"""Session pool — one SDKSession per contact, created on demand.
+"""Session pool — one SDKSession per contact/group, created on demand.
 
 Uses the Claude Agent SDK (ClaudeSDKClient) instead of the raw Anthropic API.
 Each session runs as a Claude Code subprocess with OAuth authentication —
@@ -26,10 +26,22 @@ You are reachable via Telegram and Signal.
 You have access to the server (via Bash tool) and can help with anything.
 
 Rules:
-- To reply via Signal, run: {scripts_dir}/send-signal "<recipient>" "<message>"
+- To reply via Signal DM, run: {scripts_dir}/send-signal "<recipient>" "<message>"
+- To reply to a Signal group, run: {scripts_dir}/send-signal-group "<group_id>" "<message>"
 - To reply via Telegram, run: {scripts_dir}/send-telegram "<chat_id>" "<message>"
 - You MUST call the appropriate send script via Bash to reply. Messages are NEVER sent automatically.
 - Always reply in the same channel the message came from (same platform, same chat_id/recipient).
+- Be concise. Think carefully before calling tools.
+- Admin tier contacts have full access. Trusted contacts have standard access.
+"""
+
+GROUP_SOUL = """\
+You are seb — a personal AI assistant running on a Linux server, participating in a Signal group chat.
+
+Rules:
+- To reply to this group, run: {scripts_dir}/send-signal-group "{group_id}" "<message>"
+- You MUST call the send script via Bash to reply. Messages are NEVER sent automatically.
+- Messages come from different senders — check the sender field to know who's talking.
 - Be concise. Think carefully before calling tools.
 - Admin tier contacts have full access. Trusted contacts have standard access.
 """
@@ -43,8 +55,18 @@ def _build_system_prompt(tier: str, platform: str, sender_id: str, model: str) -
   )
 
 
+def _build_group_system_prompt(
+  group_id: str, platform: str, model: str
+) -> str:
+  return (
+    f"{GROUP_SOUL.format(scripts_dir=SCRIPTS_DIR, group_id=group_id)}\n\n"
+    f"<group id='{group_id}' platform='{platform}' />\n"
+    f"<model id='{model}' />\n"
+  )
+
+
 class SDKBackend:
-  """Manages a pool of Claude Agent SDK sessions, one per (platform, sender)."""
+  """Manages a pool of Claude Agent SDK sessions, one per contact or group."""
 
   def __init__(self, model: str, cli_path: Path | None = None) -> None:
     self._model = model
@@ -78,7 +100,7 @@ class SDKBackend:
     text: str,
     tier: str,
   ) -> None:
-    """Route a message to the right session, creating one if needed."""
+    """Route a DM to the right session, creating one if needed."""
     key = f"{platform}:{sender_id}"
     if key not in self._sessions:
       self._sessions[key] = await self._create_session(key, tier, platform, sender_id)
@@ -87,6 +109,28 @@ class SDKBackend:
     wrapped = (
       f"<message platform='{platform}' sender='{sender_id}' "
       f"chat='{chat_id}' tier='{tier}'>\n{text}\n</message>"
+    )
+    await self._sessions[key].inject(wrapped)
+
+  async def inject_group_message(
+    self,
+    platform: str,
+    sender_id: str,
+    chat_id: str,
+    text: str,
+    tier: str,
+  ) -> None:
+    """Route a group message to the group session, creating one if needed."""
+    # Group sessions are keyed by the group chat_id, not the sender
+    key = f"{platform}:{chat_id}"
+    if key not in self._sessions:
+      # Use the highest tier seen (admin > trusted) for the group session
+      self._sessions[key] = await self._create_group_session(key, tier, platform, chat_id)
+
+    # Wrap with sender info so Claude knows who's talking
+    wrapped = (
+      f"<message platform='{platform}' sender='{sender_id}' "
+      f"chat='{chat_id}' tier='{tier}' type='group'>\n{text}\n</message>"
     )
     await self._sessions[key].inject(wrapped)
 
@@ -113,6 +157,40 @@ class SDKBackend:
     )
     await session.start()
     logger.info("Created session for %s (resumed=%s)", key, saved_id is not None)
+    return session
+
+  async def _create_group_session(
+    self, key: str, tier: str, platform: str, chat_id: str
+  ) -> SDKSession:
+    """Create a session for a group chat.
+
+    Group sessions are shared by all members. The tier is set to admin
+    if any admin is in the group, otherwise uses the triggering sender's tier.
+    """
+    # Sanitize group ID for filesystem (remove "group:" prefix, replace unsafe chars)
+    safe_id = chat_id.replace("group:", "").replace("+", "_").replace("/", "_").replace("=", "")
+    transcript_dir = TRANSCRIPTS_DIR / platform / f"group_{safe_id}"
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+
+    # Extract the raw group ID for the send script
+    raw_group_id = chat_id.replace("group:", "")
+
+    # Write a CLAUDE.md with group-specific system prompt
+    claude_md = transcript_dir / "CLAUDE.md"
+    prompt = _build_group_system_prompt(raw_group_id, platform, self._model)
+    claude_md.write_text(prompt)
+
+    saved_id = self._saved_ids.get(key)
+    session = SDKSession(
+      session_key=key,
+      tier=tier,
+      cwd=str(transcript_dir),
+      model=self._model,
+      cli_path=self._cli_path,
+      session_id=saved_id,
+    )
+    await session.start()
+    logger.info("Created group session for %s (resumed=%s)", key, saved_id is not None)
     return session
 
   async def stop_all(self) -> None:

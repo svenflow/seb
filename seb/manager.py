@@ -23,7 +23,7 @@ class Manager:
   ) -> None:
     cfg = get_config()
 
-    # Tier lookup
+    # Tier lookup (based on sender, not chat)
     if platform == "telegram":
       try:
         tier = cfg.tier_for_telegram(int(sender_id))
@@ -40,19 +40,29 @@ class Manager:
       logger.info("Dropping message from unknown %s:%s", platform, sender_id)
       return
 
-    # Intercept admin commands
+    # Intercept admin commands (DMs only)
+    is_group = chat_id.startswith("group:")
     stripped = text.strip().upper()
-    if tier == "admin" and stripped in ADMIN_COMMANDS:
+    if not is_group and tier == "admin" and stripped in ADMIN_COMMANDS:
       await self._handle_admin_command(stripped, platform, sender_id)
       return
 
-    await self._backend.inject_message(
-      platform=platform,
-      sender_id=sender_id,
-      chat_id=chat_id,
-      text=text,
-      tier=tier,
-    )
+    if is_group:
+      await self._backend.inject_group_message(
+        platform=platform,
+        sender_id=sender_id,
+        chat_id=chat_id,
+        text=text,
+        tier=tier,
+      )
+    else:
+      await self._backend.inject_message(
+        platform=platform,
+        sender_id=sender_id,
+        chat_id=chat_id,
+        text=text,
+        tier=tier,
+      )
 
   async def _handle_admin_command(
     self, command: str, platform: str, sender_id: str
