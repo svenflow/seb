@@ -82,6 +82,12 @@ async def run() -> None:
   finally:
     await backend.stop_all()
     logger.info("seb stopped")
+    # Force garbage collection while the event loop is still open.
+    # Without this, subprocess transports get GC'd after asyncio.run()
+    # closes the loop, causing noisy "Event loop is closed" tracebacks
+    # from BaseSubprocessTransport.__del__.
+    import gc
+    gc.collect()
 
 
 def main() -> None:
