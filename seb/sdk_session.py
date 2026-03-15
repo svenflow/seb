@@ -248,7 +248,12 @@ class SDKSession:
           self._session_id = sid
 
   def _build_options(self) -> ClaudeAgentOptions:
-    """Build ClaudeAgentOptions based on contact tier."""
+    """Build ClaudeAgentOptions based on contact tier.
+
+    Uses bypassPermissions for admin (with IS_SANDBOX=1 env var to allow
+    running as root on Linux servers). Trusted/other tiers use "default"
+    with a can_use_tool callback for restrictions.
+    """
     if self.tier == "admin":
       tools = [
         "Read", "Write", "Edit", "Bash", "Glob", "Grep",
@@ -266,6 +271,11 @@ class SDKSession:
       perm_mode = "default"
       turn_limit = 30
 
+    # IS_SANDBOX=1 allows --dangerously-skip-permissions to work as root.
+    # Without it, the Claude CLI refuses bypassPermissions for root/sudo.
+    import os
+    os.environ.setdefault("IS_SANDBOX", "1")
+
     opts = ClaudeAgentOptions(
       cwd=self.cwd,
       allowed_tools=tools,
@@ -282,7 +292,7 @@ class SDKSession:
       opts.cli_path = self._cli_path
 
     # Permission callback for non-admin tiers
-    if self.tier == "trusted":
+    if self.tier in ("trusted",):
       opts.can_use_tool = self._permission_check
 
     # Session resume or fresh session
