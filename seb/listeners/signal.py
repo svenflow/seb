@@ -43,6 +43,20 @@ class SignalListener:
       resp.raise_for_status()
     logger.debug("signal send → %s: %r", recipient, text[:80])
 
+  async def send_to_chat(self, chat_id: str, text: str) -> None:
+    """Send a message to a chat_id (DM or group).
+
+    For groups, chat_id is "group:<internal_id>". For DMs, it's the phone number.
+    """
+    import base64
+
+    if chat_id.startswith("group:"):
+      internal_id = chat_id.removeprefix("group:")
+      encoded_group = "group." + base64.b64encode(internal_id.encode()).decode()
+      await self.send(encoded_group, text)
+    else:
+      await self.send(chat_id, text)
+
   async def accept_group_invite(self, group_id: str) -> bool:
     """Accept a pending group invitation via the REST API.
 

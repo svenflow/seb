@@ -41,11 +41,24 @@ async def run() -> None:
     on_message=manager.on_message,
   )
 
+  _tg_listener: TelegramListener | None = None
+  if cfg.telegram_bot_token and not cfg.telegram_bot_token.startswith("123456789"):
+    _tg_listener = TelegramListener(on_message=manager.on_message)
+
+  # Wire up reply function so admin commands can send confirmations
+  async def _reply(platform: str, chat_id: str, text: str) -> None:
+    if platform == "signal":
+      await _signal_listener.send_to_chat(chat_id, text)
+    elif platform == "telegram" and _tg_listener:
+      await _tg_listener.send(chat_id, text)
+
+  manager.set_reply_fn(_reply)
+
   tasks = [asyncio.create_task(_signal_listener.run(), name="signal")]
 
-  if cfg.telegram_bot_token and not cfg.telegram_bot_token.startswith("123456789"):
-    _telegram_listener = TelegramListener(on_message=manager.on_message)
-    tasks.append(asyncio.create_task(_telegram_listener.run(), name="telegram"))
+  if _tg_listener:
+    _telegram_listener = _tg_listener
+    tasks.append(asyncio.create_task(_tg_listener.run(), name="telegram"))
     logger.info("Telegram listener enabled")
   else:
     logger.info("Telegram listener disabled (no token configured)")
