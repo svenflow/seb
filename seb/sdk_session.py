@@ -1,251 +1,310 @@
-"""Per-contact Claude session backed by the Anthropic Agent SDK."""
+"""Per-contact Claude session backed by the Claude Agent SDK.
+
+Replaces the raw Anthropic API with ClaudeSDKClient, which spawns a Claude Code
+subprocess. This means:
+- No API key needed (uses OAuth via `claude login`)
+- Native tool support (Bash, Read, Write, Grep, etc.) — no manual tool defs
+- Session persistence and resume built in
+- Claude sends messages by calling send scripts via Bash tool
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
 
-import anthropic
+from claude_agent_sdk import (
+  ClaudeSDKClient,
+  ClaudeAgentOptions,
+  AssistantMessage,
+  ResultMessage,
+  SystemMessage,
+  TextBlock,
+  ToolUseBlock,
+  ToolResultBlock,
+  UserMessage,
+  PermissionResultAllow,
+  PermissionResultDeny,
+  HookMatcher,
+)
+
+# Patch SDK message parser to handle unknown message types gracefully.
+try:
+  import claude_agent_sdk._internal.message_parser as _mp
+  import claude_agent_sdk._internal.client as _client
+
+  _original_parse = _mp.parse_message
+
+  def _tolerant_parse(data):
+    try:
+      return _original_parse(data)
+    except Exception:
+      return SystemMessage(subtype=data.get("type", "unknown"), data=data)
+
+  _client.parse_message = _tolerant_parse
+except (ImportError, AttributeError):
+  pass
 
 if TYPE_CHECKING:
-  from seb.sdk_backend import SendFn
+  from claude_agent_sdk.types import (
+    SyncHookJSONOutput,
+    HookContext,
+    PreToolUseHookInput,
+  )
+  HookInputType = Any
 
 logger = logging.getLogger(__name__)
 
 ADMIN_COMMANDS = {"HEALME", "RESTART"}
 
-MODEL_ALIASES = {
-  "--opus":   "claude-opus-4-6",
-  "--sonnet": "claude-sonnet-4-6",
-  "--haiku":  "claude-haiku-4-5-20251001",
-}
-MODEL_NAMES = {
-  "claude-opus-4-6":           "Opus 4.6",
-  "claude-sonnet-4-6":         "Sonnet 4.6",
-  "claude-haiku-4-5-20251001": "Haiku 4.5",
-}
-
-
-@dataclass
-class QueuedMessage:
-  platform: str  # "telegram" | "signal"
-  sender_id: str
-  chat_id: str
-  text: str
-  tier: str
-
 
 class SDKSession:
   """
-  Manages one persistent Claude conversation for a single contact.
+  Manages one persistent Claude Agent SDK session for a single contact.
 
-  Messages are queued via asyncio.Queue so that mid-turn messages can be
-  injected between tool calls without interrupting execution.
+  Uses concurrent send/receive architecture: a background receiver task
+  runs receive_messages() continuously while the sender dispatches
+  query() calls from the queue. This enables mid-turn steering.
   """
 
   def __init__(
     self,
     session_key: str,
-    send_fn: "SendFn",
-    client: anthropic.AsyncAnthropic,
-    model: str,
-    system_prompt: str,
+    tier: str,
+    cwd: str,
+    model: str = "haiku",
+    cli_path: Path | None = None,
     session_id: str | None = None,
   ) -> None:
     self.session_key = session_key
-    self._send_fn = send_fn
-    self._client = client
-    self._default_model = model
+    self.tier = tier
+    self.cwd = cwd
     self._model = model
-    self._model_switched_at: float | None = None  # timestamp of last manual switch
-    self._system_prompt = system_prompt
+    self._cli_path = cli_path
     self._session_id: str | None = session_id
 
-    self._queue: asyncio.Queue[QueuedMessage] = asyncio.Queue()
-    self._task: asyncio.Task[None] | None = None
-    self._messages: list[dict[str, Any]] = []
+    self._client: Optional[ClaudeSDKClient] = None
+    self._queue: asyncio.Queue[str] = asyncio.Queue()
+    self._task: Optional[asyncio.Task] = None
+    self._pending_queries = 0
+    self.running = False
 
-  def start(self) -> None:
+    # Metrics
+    self.turn_count = 0
+    self.created_at = datetime.now()
+    self.last_activity = datetime.now()
+    self._error_count = 0
+
+  @property
+  def session_id(self) -> str | None:
+    return self._session_id
+
+  async def start(self) -> None:
+    """Connect ClaudeSDKClient and start the message processing loop."""
+    options = self._build_options()
+    self._client = ClaudeSDKClient(options=options)
+    await self._client.connect()
+    self.running = True
     self._task = asyncio.create_task(self._run_loop(), name=f"session:{self.session_key}")
-
-  async def inject(self, msg: QueuedMessage) -> None:
-    await self._queue.put(msg)
+    logger.info("Session %s started (resume=%s)", self.session_key, self._session_id)
 
   async def stop(self) -> None:
+    """Stop the session and kill the subprocess."""
+    self.running = False
     if self._task:
       self._task.cancel()
       try:
         await self._task
       except asyncio.CancelledError:
         pass
+    await self._kill_subprocess()
+    logger.info("Session %s stopped (turns=%d)", self.session_key, self.turn_count)
+
+  async def inject(self, text: str) -> None:
+    """Queue a message for delivery to the Claude session."""
+    await self._queue.put(text)
+    logger.debug("Session %s: queued message (%d chars)", self.session_key, len(text))
+
+  def is_alive(self) -> bool:
+    return self.running and self._task is not None and not self._task.done()
+
+  async def _kill_subprocess(self) -> None:
+    """Kill the Claude CLI subprocess to prevent zombies."""
+    if not self._client:
+      return
+    try:
+      transport = getattr(self._client, "_transport", None)
+      if transport:
+        process = getattr(transport, "_process", None)
+        if process and process.returncode is None:
+          process.terminate()
+          try:
+            await asyncio.wait_for(process.wait(), timeout=2.0)
+          except asyncio.TimeoutError:
+            process.kill()
+    except Exception as e:
+      logger.warning("Session %s: subprocess kill error: %s", self.session_key, e)
+    finally:
+      self._client = None
 
   async def _run_loop(self) -> None:
-    logger.info("Session %s started", self.session_key)
-    while True:
+    """Main loop: start background receiver, then send queries from queue."""
+    receiver = asyncio.create_task(self._receive_loop())
+    try:
+      while self.running:
+        if receiver.done():
+          logger.warning("Session %s: receiver crashed, exiting", self.session_key)
+          break
+
+        try:
+          msg = await asyncio.wait_for(self._queue.get(), timeout=30)
+        except asyncio.TimeoutError:
+          continue
+
+        if msg == "__SHUTDOWN__":
+          break
+
+        self.last_activity = datetime.now()
+        self._pending_queries += 1
+
+        try:
+          assert self._client is not None
+          await self._client.query(msg)
+        except asyncio.CancelledError:
+          raise
+        except Exception as e:
+          self._pending_queries = max(0, self._pending_queries - 1)
+          self._error_count += 1
+          logger.error("Session %s: query error #%d: %s", self.session_key, self._error_count, e)
+          if self._error_count >= 3:
+            self.running = False
+            break
+          await asyncio.sleep(2 * self._error_count)
+
+    except asyncio.CancelledError:
+      raise
+    finally:
+      receiver.cancel()
       try:
-        msg = await self._queue.get()
-        await self._process(msg)
+        await receiver
       except asyncio.CancelledError:
-        raise
-      except Exception:
-        logger.exception("Session %s: error processing message", self.session_key)
+        pass
+      await self._kill_subprocess()
 
-  async def _process(self, msg: QueuedMessage) -> None:
-    text = msg.text
+  async def _receive_loop(self) -> None:
+    """Background receiver: handle all messages from the SDK."""
+    try:
+      assert self._client is not None
+      async for message in self._client.receive_messages():
+        self._handle_message(message)
+        if isinstance(message, ResultMessage):
+          self._pending_queries = 0
+          self._error_count = 0
+    except asyncio.CancelledError:
+      pass
+    except Exception as e:
+      self._error_count += 1
+      logger.error("Session %s: receiver error: %s", self.session_key, e)
+      error_str = str(e).lower()
+      is_fatal = "buffer" in error_str or "1048576" in error_str
+      if is_fatal or self._error_count >= 3:
+        self.running = False
+        try:
+          self._queue.put_nowait("__SHUTDOWN__")
+        except Exception:
+          pass
 
-    # Revert to default model if sticky timeout (30 min) has elapsed
-    MODEL_STICKY_SECS = 30 * 60
-    if (
-      self._model != self._default_model
-      and self._model_switched_at is not None
-      and time.monotonic() - self._model_switched_at > MODEL_STICKY_SECS
-    ):
-      logger.info("Session %s: model timeout, reverting %s → %s",
-        self.session_key, self._model, self._default_model)
-      self._model = self._default_model
-      self._model_switched_at = None
+  def _handle_message(self, message: Any) -> None:
+    """Log and track messages from the SDK."""
+    if isinstance(message, AssistantMessage):
+      for block in message.content:
+        if isinstance(block, TextBlock):
+          logger.info("Session %s OUT: %s", self.session_key, block.text[:200])
+        elif isinstance(block, ToolUseBlock):
+          logger.info("Session %s TOOL: %s", self.session_key, block.name)
 
-    # Check for model switch prefix (case-insensitive), e.g. --opus, --sonnet, --haiku
-    lower = text.strip().lower()
-    for flag, model_id in MODEL_ALIASES.items():
-      if lower.startswith(flag):
-        old_model = self._model
-        self._model = model_id
-        self._model_switched_at = time.monotonic() if model_id != self._default_model else None
-        text = text[len(flag):].lstrip()
-        if old_model != model_id:
-          logger.info("Session %s: switched model %s → %s", self.session_key, old_model, model_id)
-          if not text:
-            suffix = " (reverts to Haiku in 30 min)" if model_id != self._default_model else ""
-            await self._send_fn(msg.platform, msg.chat_id, f"Switched to {MODEL_NAMES[model_id]}.{suffix}")
-            return
-        break
-
-    wrapped = (
-      f"<message platform='{msg.platform}' sender='{msg.sender_id}' "
-      f"chat='{msg.chat_id}' tier='{msg.tier}'>\n{text}\n</message>"
-    )
-    self._messages.append({"role": "user", "content": wrapped})
-
-    logger.debug("Session %s: calling Claude (%d msgs)", self.session_key, len(self._messages))
-
-    # Agentic loop: call Claude, handle tool use, repeat until stop
-    MAX_ITERATIONS = 20
-    for _iter in range(MAX_ITERATIONS):
-      response = await self._client.messages.create(
-        model=self._model,
-        max_tokens=8192,
-        system=self._system_prompt,
-        messages=self._messages,
-        tools=self._tool_definitions(),
+    elif isinstance(message, ResultMessage):
+      self.turn_count += message.num_turns or 0
+      if message.session_id:
+        self._session_id = message.session_id
+      self.last_activity = datetime.now()
+      logger.info(
+        "Session %s TURN #%d | duration=%sms | error=%s",
+        self.session_key,
+        self.turn_count,
+        message.duration_ms,
+        message.is_error,
       )
 
-      self._messages.append({"role": "assistant", "content": response.content})
+    elif isinstance(message, SystemMessage):
+      if hasattr(message, "data") and isinstance(message.data, dict):
+        sid = message.data.get("session_id")
+        if sid and not self._session_id:
+          self._session_id = sid
 
-      if response.stop_reason == "end_turn":
-        break
-
-      if response.stop_reason == "tool_use":
-        tool_results = await self._handle_tool_calls(response.content, msg)
-        self._messages.append({"role": "user", "content": tool_results})
-
-        # Check for mid-turn injected messages
-        pending = self._drain_queue()
-        if pending:
-          injection = "\n\n".join(
-            f"<injected platform='{m.platform}' sender='{m.sender_id}'>\n{m.text}\n</injected>"
-            for m in pending
-          )
-          self._messages.append({"role": "user", "content": injection})
-
-        continue
-
-      # Unknown stop reason — break to avoid infinite loop
-      logger.warning("Session %s: unexpected stop_reason %r", self.session_key, response.stop_reason)
-      break
+  def _build_options(self) -> ClaudeAgentOptions:
+    """Build ClaudeAgentOptions based on contact tier."""
+    if self.tier == "admin":
+      tools = [
+        "Read", "Write", "Edit", "Bash", "Glob", "Grep",
+        "WebSearch", "WebFetch", "Task", "NotebookEdit",
+      ]
+      perm_mode = "bypassPermissions"
+      turn_limit = 200
+    elif self.tier == "trusted":
+      tools = ["Read", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"]
+      perm_mode = "default"
+      turn_limit = 50
     else:
-      logger.warning("Session %s: hit max iterations (%d), stopping", self.session_key, MAX_ITERATIONS)
+      # Default: restricted
+      tools = ["Read", "Bash", "Glob", "Grep"]
+      perm_mode = "default"
+      turn_limit = 30
 
-  async def _handle_tool_calls(
-    self, content: list[Any], msg: QueuedMessage
-  ) -> list[dict[str, Any]]:
-    results = []
-    for block in content:
-      if block.type != "tool_use":
-        continue
-      tool_name = block.name
-      tool_input = block.input
+    opts = ClaudeAgentOptions(
+      cwd=self.cwd,
+      allowed_tools=tools,
+      permission_mode=perm_mode,
+      setting_sources=["project"],  # Load CLAUDE.md from cwd
+      model=self._model,
+      fallback_model="sonnet",
+      max_turns=turn_limit,
+      max_buffer_size=10 * 1024 * 1024,  # 10MB
+    )
 
-      logger.info("Session %s: tool call %s %r", self.session_key, tool_name, tool_input)
+    # Custom CLI path (if configured)
+    if self._cli_path:
+      opts.cli_path = self._cli_path
 
-      try:
-        result = await self._execute_tool(tool_name, tool_input, msg)
-      except Exception as exc:
-        result = f"Error: {exc}"
+    # Permission callback for non-admin tiers
+    if self.tier == "trusted":
+      opts.can_use_tool = self._permission_check
 
-      results.append({
-        "type": "tool_result",
-        "tool_use_id": block.id,
-        "content": str(result),
-      })
-    return results
+    # Session resume or fresh session
+    if self._session_id:
+      opts.extra_args = {"resume": self._session_id}
+    else:
+      opts.extra_args = {"session-id": str(uuid.uuid4())}
 
-  async def _execute_tool(
-    self, name: str, input_: dict[str, Any], msg: QueuedMessage
-  ) -> str:
-    if name == "send-telegram":
-      chat_id = input_["chat_id"]
-      text = input_["text"]
-      await self._send_fn("telegram", chat_id, text)
-      return "sent"
+    return opts
 
-    if name == "send-signal":
-      recipient = input_["recipient"]
-      text = input_["text"]
-      await self._send_fn("signal", recipient, text)
-      return "sent"
+  async def _permission_check(
+    self, tool_name: str, tool_input: dict[str, Any], context: Any
+  ) -> PermissionResultAllow | PermissionResultDeny:
+    """Enforce tier-based tool restrictions for trusted contacts."""
+    # Block file writes
+    if tool_name in ("Write", "Edit", "NotebookEdit"):
+      return PermissionResultDeny(message=f"{tool_name} blocked for trusted tier")
 
-    # Bash tool — run arbitrary shell commands
-    if name == "Bash" or name == "bash":
-      import asyncio.subprocess as asp
-      cmd = input_.get("command", "")
-      proc = await asp.create_subprocess_shell(
-        cmd,
-        stdout=asp.PIPE,
-        stderr=asp.STDOUT,
-      )
-      stdout, _ = await proc.communicate()
-      return stdout.decode(errors="replace")[:8000]
+    # Block sensitive file reads
+    if tool_name == "Read":
+      path = tool_input.get("file_path", "")
+      if any(s in path for s in [".ssh", ".env", "credentials", "secrets", "token"]):
+        return PermissionResultDeny(message="Sensitive file blocked for trusted tier")
 
-    return f"Unknown tool: {name}"
-
-  def _drain_queue(self) -> list[QueuedMessage]:
-    items = []
-    while not self._queue.empty():
-      try:
-        items.append(self._queue.get_nowait())
-      except asyncio.QueueEmpty:
-        break
-    return items
-
-  def _tool_definitions(self) -> list[dict[str, Any]]:
-    from seb.tools.send_telegram import TOOL_DEFINITION as TG
-    from seb.tools.send_signal import TOOL_DEFINITION as SIG
-    return [
-      TG,
-      SIG,
-      {
-        "name": "Bash",
-        "description": "Run a shell command on the server and return stdout+stderr.",
-        "input_schema": {
-          "type": "object",
-          "properties": {
-            "command": {"type": "string", "description": "The shell command to run."},
-          },
-          "required": ["command"],
-        },
-      },
-    ]
+    return PermissionResultAllow()

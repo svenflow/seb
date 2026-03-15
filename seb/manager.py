@@ -6,7 +6,6 @@ import logging
 
 from seb.config import get_config
 from seb.sdk_backend import SDKBackend
-from seb.sdk_session import QueuedMessage
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +46,13 @@ class Manager:
       await self._handle_admin_command(stripped, platform, sender_id)
       return
 
-    msg = QueuedMessage(
+    await self._backend.inject_message(
       platform=platform,
       sender_id=sender_id,
       chat_id=chat_id,
       text=text,
       tier=tier,
     )
-    await self._backend.inject_message(msg)
 
   async def _handle_admin_command(
     self, command: str, platform: str, sender_id: str
@@ -66,6 +64,6 @@ class Manager:
       import sys
       sys.exit(0)
     elif command == "HEALME":
-      # Placeholder — could clear session state, reload config, etc.
+      # Clear all sessions and let them be recreated on next message
       logger.info("HEALME: resetting sessions")
       await self._backend.stop_all()

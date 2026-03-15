@@ -1,0 +1,56 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx"]
+# ///
+"""Send a Signal message via signal-cli-rest-api.
+
+Usage: send-signal <recipient> <message>
+
+Reads SIGNAL_NUMBER and SIGNAL_API_URL from environment or ~/seb/.env.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+import httpx
+
+
+def main() -> None:
+  if len(sys.argv) < 3:
+    print("Usage: send-signal <recipient> <message>", file=sys.stderr)
+    sys.exit(1)
+
+  recipient = sys.argv[1]
+  text = sys.argv[2]
+
+  # Load .env if environment vars aren't set
+  env_file = Path(__file__).parent.parent / ".env"
+  if env_file.exists() and not os.getenv("SIGNAL_NUMBER"):
+    for line in env_file.read_text().splitlines():
+      line = line.strip()
+      if line and not line.startswith("#") and "=" in line:
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+  signal_number = os.environ.get("SIGNAL_NUMBER")
+  if not signal_number:
+    print("Error: SIGNAL_NUMBER not set", file=sys.stderr)
+    sys.exit(1)
+
+  api_url = os.environ.get("SIGNAL_API_URL", "http://127.0.0.1:6001").rstrip("/")
+
+  payload = {
+    "number": signal_number,
+    "recipients": [recipient],
+    "message": text,
+  }
+
+  resp = httpx.post(f"{api_url}/v2/send", json=payload, timeout=30)
+  resp.raise_for_status()
+  print(f"Sent to {recipient}")
+
+
+if __name__ == "__main__":
+  main()
