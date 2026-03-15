@@ -7,6 +7,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _require_env(name: str) -> str:
+  """Return the value of an environment variable or raise a descriptive error."""
+  value = os.environ.get(name)
+  if value is None:
+    raise EnvironmentError(
+      f"Required environment variable {name} is not set. "
+      f"Add it to your .env file or export it in your shell."
+    )
+  return value
+
+
 @dataclass
 class Config:
   # Claude Agent SDK — uses OAuth via `claude login`, no API key needed.
@@ -23,7 +34,7 @@ class Config:
   )
 
   # Signal
-  signal_number: str = field(default_factory=lambda: os.environ["SIGNAL_NUMBER"])
+  signal_number: str = field(default_factory=lambda: _require_env("SIGNAL_NUMBER"))
   # Base URL for signal-cli-rest-api (bbernhard Docker image)
   signal_api_url: str = field(
     default_factory=lambda: os.getenv("SIGNAL_API_URL", "http://127.0.0.1:6001")
@@ -34,7 +45,7 @@ class Config:
     default_factory=lambda: int(os.environ["ADMIN_TELEGRAM_ID"]) if os.getenv("ADMIN_TELEGRAM_ID") else None
   )
   admin_signal_number: str = field(
-    default_factory=lambda: os.environ["ADMIN_SIGNAL_NUMBER"]
+    default_factory=lambda: _require_env("ADMIN_SIGNAL_NUMBER")
   )
 
   # Trusted contacts (in addition to admin)

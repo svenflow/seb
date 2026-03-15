@@ -44,6 +44,7 @@ try:
     try:
       return _original_parse(data)
     except Exception:
+      logging.getLogger(__name__).warning("SDK parser failed for message type %r, falling back to SystemMessage", data.get("type", "unknown"))
       return SystemMessage(subtype=data.get("type", "unknown"), data=data)
 
   _client.parse_message = _tolerant_parse
@@ -276,8 +277,11 @@ class SDKSession:
 
     # IS_SANDBOX=1 allows --dangerously-skip-permissions to work as root.
     # Without it, the Claude CLI refuses bypassPermissions for root/sudo.
-    import os
-    os.environ.setdefault("IS_SANDBOX", "1")
+    # Passed via opts.env so it only applies to the admin subprocess,
+    # not process-wide via os.environ (which would leak to non-admin sessions).
+    env: dict[str, str] = {}
+    if self.tier == "admin":
+      env["IS_SANDBOX"] = "1"
 
     opts = ClaudeAgentOptions(
       cwd=self.cwd,
@@ -288,14 +292,15 @@ class SDKSession:
       fallback_model="sonnet",
       max_turns=turn_limit,
       max_buffer_size=10 * 1024 * 1024,  # 10MB
+      env=env,
     )
 
     # Custom CLI path (if configured)
     if self._cli_path:
       opts.cli_path = self._cli_path
 
-    # Permission callback for non-admin tiers
-    if self.tier in ("trusted",):
+    # Permission callback for all non-admin tiers
+    if self.tier != "admin":
       opts.can_use_tool = self._permission_check
 
     # Session resume or fresh session
@@ -309,15 +314,36 @@ class SDKSession:
   async def _permission_check(
     self, tool_name: str, tool_input: dict[str, Any], context: Any
   ) -> PermissionResultAllow | PermissionResultDeny:
-    """Enforce tier-based tool restrictions for trusted contacts."""
-    # Block file writes
-    if tool_name in ("Write", "Edit", "NotebookEdit"):
-      return PermissionResultDeny(message=f"{tool_name} blocked for trusted tier")
+    """Enforce tier-based tool restrictions for non-admin contacts."""
+    _SEND_SCRIPT_PREFIXES = ("send-signal", "send-telegram", "send-sms")
 
-    # Block sensitive file reads
+    if self.tier == "default":
+      # Default tier: block Write/Edit entirely
+      if tool_name in ("Write", "Edit", "NotebookEdit"):
+        return PermissionResultDeny(message=f"{tool_name} blocked for default tier")
+
+      # Default tier: block Bash except send scripts
+      if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        if not any(prefix in command for prefix in _SEND_SCRIPT_PREFIXES):
+          return PermissionResultDeny(message="Bash blocked for default tier (only send scripts allowed)")
+
+      # Default tier: block sensitive reads
+      if tool_name == "Read":
+        path = tool_input.get("file_path", "")
+        if any(s in path for s in [".ssh", ".env", "credentials", "secrets", "token", "/etc/shadow", "/etc/passwd"]):
+          return PermissionResultDeny(message="Sensitive file blocked for default tier")
+
+      return PermissionResultAllow()
+
+    # Trusted tier: block file writes
+    if tool_name in ("Write", "Edit", "NotebookEdit"):
+      return PermissionResultDeny(message=f"{tool_name} blocked for {self.tier} tier")
+
+    # Trusted tier: block sensitive file reads
     if tool_name == "Read":
       path = tool_input.get("file_path", "")
       if any(s in path for s in [".ssh", ".env", "credentials", "secrets", "token"]):
-        return PermissionResultDeny(message="Sensitive file blocked for trusted tier")
+        return PermissionResultDeny(message=f"Sensitive file blocked for {self.tier} tier")
 
     return PermissionResultAllow()
