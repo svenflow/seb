@@ -146,13 +146,12 @@ class Manager:
   ) -> None:
     logger.info("Admin command %r from %s:%s", command, platform, sender_id)
     if command in ("RESTART", "REBOOT"):
-      # Save sessions and exit; systemd (Restart=on-failure) brings us back.
-      # REBOOT and RESTART are identical — both rely on systemd, no separate
-      # systemctl call needed (avoids overlapping restart race).
+      # Save sessions and exit with code 1 so systemd (Restart=on-failure)
+      # brings us back. Exit code 0 is a "clean" exit that systemd won't restart.
       await self._reply(platform, chat_id, "Rebooting… be back in ~10s.")
       await self._backend.stop_all()
       import sys
-      sys.exit(0)
+      sys.exit(1)
     elif command == "HEALME":
       # Full reset: stop all sessions, clear saved IDs, then exit so systemd
       # restarts cleanly (avoids half-reset state).
@@ -161,4 +160,4 @@ class Manager:
       await self._backend.stop_all()
       self._backend.clear_saved_session_ids()
       import sys
-      sys.exit(0)
+      sys.exit(1)
