@@ -151,7 +151,10 @@ class SDKSession:
         # Close the transport to prevent "Event loop is closed" errors
         # during garbage collection after the event loop shuts down.
         if hasattr(transport, "close"):
-          transport.close()
+          close_result = transport.close()
+          # Handle both sync and async close methods
+          if asyncio.iscoroutine(close_result):
+            await close_result
           # Give the transport time to finish cleanup while loop is alive
           await asyncio.sleep(0.1)
     except Exception as e:
