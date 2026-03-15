@@ -109,8 +109,6 @@ HTML = """<!DOCTYPE html>
       font-family: 'SF Mono', 'Fira Code', monospace;
       font-size: 13px;
       padding: 1.25rem;
-      max-width: 900px;
-      margin: 0 auto;
     }
     h1 { font-size: 1.1rem; color: #fff; display: inline; }
     .meta { display: inline; font-size: 0.7rem; color: #555; margin-left: 0.75rem; }
