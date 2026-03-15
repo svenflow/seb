@@ -277,9 +277,11 @@ class SDKSession:
 
     # IS_SANDBOX=1 allows --dangerously-skip-permissions to work as root.
     # Without it, the Claude CLI refuses bypassPermissions for root/sudo.
-    import os
+    # Passed via opts.env so it only applies to the admin subprocess,
+    # not process-wide via os.environ (which would leak to non-admin sessions).
+    env: dict[str, str] = {}
     if self.tier == "admin":
-      os.environ.setdefault("IS_SANDBOX", "1")
+      env["IS_SANDBOX"] = "1"
 
     opts = ClaudeAgentOptions(
       cwd=self.cwd,
@@ -290,6 +292,7 @@ class SDKSession:
       fallback_model="sonnet",
       max_turns=turn_limit,
       max_buffer_size=10 * 1024 * 1024,  # 10MB
+      env=env,
     )
 
     # Custom CLI path (if configured)
