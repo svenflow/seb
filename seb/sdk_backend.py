@@ -193,12 +193,11 @@ class SDKBackend:
     transcript_dir = TRANSCRIPTS_DIR / platform / sender_id.replace("+", "_")
     transcript_dir.mkdir(parents=True, exist_ok=True)
 
-    # Only write CLAUDE.md for fresh sessions (no saved ID to resume)
+    # Always write CLAUDE.md so prompt updates take effect even on resume
     claude_md = transcript_dir / "CLAUDE.md"
     saved_id = self._saved_ids.get(key)
-    if not claude_md.exists() or saved_id is None:
-      prompt = _build_system_prompt(tier, platform, sender_id, self._model)
-      claude_md.write_text(prompt)
+    prompt = _build_system_prompt(tier, platform, sender_id, self._model)
+    claude_md.write_text(prompt)
 
     session = SDKSession(
       session_key=key,
@@ -228,12 +227,11 @@ class SDKBackend:
     # Extract the raw group ID for the send script
     raw_group_id = chat_id.replace("group:", "")
 
-    # Only write CLAUDE.md for fresh sessions (no saved ID to resume)
+    # Always write CLAUDE.md so prompt updates take effect even on resume
     claude_md = transcript_dir / "CLAUDE.md"
     saved_id = self._saved_ids.get(key)
-    if not claude_md.exists() or saved_id is None:
-      prompt = _build_group_system_prompt(raw_group_id, platform, self._model)
-      claude_md.write_text(prompt)
+    prompt = _build_group_system_prompt(raw_group_id, platform, self._model)
+    claude_md.write_text(prompt)
 
     session = SDKSession(
       session_key=key,
