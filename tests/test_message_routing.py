@@ -59,13 +59,15 @@ async def test_unknown_telegram_dropped():
 
 
 async def test_healme_intercepted():
-    """HEALME command from admin should call stop_all + clear_saved_session_ids."""
+    """HEALME command from admin should call stop_all + clear_saved_session_ids + sys.exit(0)."""
     manager, backend = _make_manager()
 
     with patch("seb.manager.get_config") as mock_cfg:
         mock_cfg.return_value.tier_for_signal.return_value = "admin"
-        await manager.on_message("signal", "+admin", "+admin", "HEALME")
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "+admin", "HEALME")
 
+    assert exc_info.value.code == 0
     backend.stop_all.assert_awaited_once()
     backend.clear_saved_session_ids.assert_called_once()
     backend.inject_message.assert_not_called()
@@ -90,8 +92,10 @@ async def test_admin_command_case_insensitive():
 
     with patch("seb.manager.get_config") as mock_cfg:
         mock_cfg.return_value.tier_for_signal.return_value = "admin"
-        await manager.on_message("signal", "+admin", "+admin", "healme")
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "+admin", "healme")
 
+    assert exc_info.value.code == 0
     backend.stop_all.assert_awaited_once()
     backend.clear_saved_session_ids.assert_called_once()
 
@@ -102,13 +106,15 @@ async def test_admin_command_with_whitespace():
 
     with patch("seb.manager.get_config") as mock_cfg:
         mock_cfg.return_value.tier_for_signal.return_value = "admin"
-        await manager.on_message("signal", "+admin", "+admin", "  HEALME  ")
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "+admin", "  HEALME  ")
 
+    assert exc_info.value.code == 0
     backend.stop_all.assert_awaited_once()
 
 
-async def test_admin_command_ignored_in_group():
-    """Admin commands in group chats should NOT be intercepted — they go to the session."""
+async def test_bare_admin_command_ignored_in_group():
+    """Bare admin commands (e.g. 'HEALME') in group chats should NOT be intercepted."""
     manager, backend = _make_manager()
 
     with patch("seb.manager.get_config") as mock_cfg:
@@ -116,6 +122,91 @@ async def test_admin_command_ignored_in_group():
         await manager.on_message("signal", "+admin", "group:abc", "HEALME")
 
     # Should be forwarded as a group message, not intercepted
+    backend.inject_group_message.assert_awaited_once()
+    backend.stop_all.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Group admin commands via "seb <command>" pattern
+# ---------------------------------------------------------------------------
+
+
+async def test_seb_healme_in_group():
+    """'seb healme' in a group should be intercepted as admin command."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "group:abc", "seb healme")
+
+    assert exc_info.value.code == 0
+    backend.stop_all.assert_awaited_once()
+    backend.clear_saved_session_ids.assert_called_once()
+    backend.inject_group_message.assert_not_awaited()
+
+
+async def test_seb_restart_in_group():
+    """'seb restart' in a group should be intercepted as admin command."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "group:abc", "seb restart")
+
+    assert exc_info.value.code == 0
+    backend.stop_all.assert_awaited_once()
+    backend.inject_group_message.assert_not_awaited()
+
+
+async def test_seb_reboot_in_group():
+    """'seb reboot' in a group should be intercepted as admin command."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "group:abc", "seb reboot")
+
+    assert exc_info.value.code == 0
+    backend.stop_all.assert_awaited_once()
+    backend.inject_group_message.assert_not_awaited()
+
+
+async def test_seb_command_case_insensitive_in_group():
+    """'Seb REBOOT' (mixed case) in a group should be intercepted."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "group:abc", "Seb REBOOT")
+
+    assert exc_info.value.code == 0
+    backend.stop_all.assert_awaited_once()
+
+
+async def test_seb_non_command_in_group_forwarded():
+    """'seb hello' in a group should NOT be intercepted (not an admin command)."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        await manager.on_message("signal", "+admin", "group:abc", "seb hello")
+
+    backend.inject_group_message.assert_awaited_once()
+    backend.stop_all.assert_not_awaited()
+
+
+async def test_seb_command_non_admin_in_group_forwarded():
+    """'seb restart' from a non-admin in a group should be forwarded, not intercepted."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "trusted"
+        await manager.on_message("signal", "+trusted", "group:abc", "seb restart")
+
     backend.inject_group_message.assert_awaited_once()
     backend.stop_all.assert_not_awaited()
 
@@ -232,3 +323,121 @@ async def test_telegram_tier_lookup():
 
     mock_cfg.return_value.tier_for_telegram.assert_called_once_with(123456)
     backend.inject_message.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# REBOOT command (identical to RESTART)
+# ---------------------------------------------------------------------------
+
+
+async def test_reboot_intercepted():
+    """REBOOT command from admin should call stop_all and sys.exit(0), same as RESTART."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "+admin", "REBOOT")
+
+    assert exc_info.value.code == 0
+    backend.stop_all.assert_awaited_once()
+    # REBOOT should NOT clear saved session IDs (unlike HEALME)
+    backend.clear_saved_session_ids.assert_not_called()
+
+
+async def test_reboot_case_insensitive():
+    """REBOOT should work case-insensitively."""
+    manager, backend = _make_manager()
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "+admin", "reboot")
+
+    assert exc_info.value.code == 0
+    backend.stop_all.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# set_reply_fn and confirmation messages
+# ---------------------------------------------------------------------------
+
+
+async def test_set_reply_fn_called_on_restart():
+    """When reply_fn is set, RESTART should send a confirmation message."""
+    manager, backend = _make_manager()
+    reply_fn = AsyncMock()
+    manager.set_reply_fn(reply_fn)
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit):
+            await manager.on_message("signal", "+admin", "+admin", "RESTART")
+
+    reply_fn.assert_awaited_once()
+    call_args = reply_fn.call_args
+    assert call_args[0][0] == "signal"  # platform
+    assert call_args[0][1] == "+admin"  # chat_id
+    assert "reboot" in call_args[0][2].lower() or "back" in call_args[0][2].lower()
+
+
+async def test_set_reply_fn_called_on_healme():
+    """When reply_fn is set, HEALME should send a confirmation message."""
+    manager, backend = _make_manager()
+    reply_fn = AsyncMock()
+    manager.set_reply_fn(reply_fn)
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit):
+            await manager.on_message("signal", "+admin", "+admin", "HEALME")
+
+    reply_fn.assert_awaited_once()
+    call_args = reply_fn.call_args
+    assert call_args[0][0] == "signal"
+    assert call_args[0][1] == "+admin"
+    assert "heal" in call_args[0][2].lower() or "reset" in call_args[0][2].lower()
+
+
+async def test_no_reply_fn_does_not_crash():
+    """Admin commands should work fine even without a reply_fn set."""
+    manager, backend = _make_manager()
+    # Don't set reply_fn — it should default to None
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit):
+            await manager.on_message("signal", "+admin", "+admin", "RESTART")
+
+    backend.stop_all.assert_awaited_once()
+
+
+async def test_reply_fn_error_does_not_block_command():
+    """If reply_fn raises, the admin command should still execute."""
+    manager, backend = _make_manager()
+    reply_fn = AsyncMock(side_effect=RuntimeError("send failed"))
+    manager.set_reply_fn(reply_fn)
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit) as exc_info:
+            await manager.on_message("signal", "+admin", "+admin", "RESTART")
+
+    assert exc_info.value.code == 0
+    backend.stop_all.assert_awaited_once()
+
+
+async def test_reply_fn_receives_group_chat_id():
+    """In a group, the reply should go to the group chat_id, not the sender."""
+    manager, backend = _make_manager()
+    reply_fn = AsyncMock()
+    manager.set_reply_fn(reply_fn)
+
+    with patch("seb.manager.get_config") as mock_cfg:
+        mock_cfg.return_value.tier_for_signal.return_value = "admin"
+        with pytest.raises(SystemExit):
+            await manager.on_message("signal", "+admin", "group:mygrp", "seb reboot")
+
+    reply_fn.assert_awaited_once()
+    call_args = reply_fn.call_args
+    assert call_args[0][1] == "group:mygrp"  # chat_id, not sender
