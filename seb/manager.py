@@ -102,28 +102,20 @@ class Manager:
     self, command: str, platform: str, sender_id: str, chat_id: str
   ) -> None:
     logger.info("Admin command %r from %s:%s", command, platform, sender_id)
-    if command == "RESTART":
-      # Save sessions and exit; systemd will restart the process
-      await self._reply(platform, chat_id, "Restarting… be back in ~10s.")
+    if command in ("RESTART", "REBOOT"):
+      # Save sessions and exit; systemd (Restart=on-failure) brings us back.
+      # REBOOT and RESTART are identical — both rely on systemd, no separate
+      # systemctl call needed (avoids overlapping restart race).
+      await self._reply(platform, chat_id, "Rebooting… be back in ~10s.")
       await self._backend.stop_all()
       import sys
       sys.exit(0)
     elif command == "HEALME":
-      # Full reset: stop all sessions, then clear saved IDs so they aren't
-      # resumed with potentially broken state on next message.
+      # Full reset: stop all sessions, clear saved IDs, then exit so systemd
+      # restarts cleanly (avoids half-reset state).
       logger.info("HEALME: resetting sessions and clearing saved IDs")
       await self._reply(platform, chat_id, "Healing… resetting all sessions.")
       await self._backend.stop_all()
       self._backend.clear_saved_session_ids()
-    elif command == "REBOOT":
-      # Graceful reboot: save sessions, then restart via systemctl
-      logger.info("REBOOT: saving sessions and restarting service")
-      await self._reply(platform, chat_id, "Rebooting… be back in ~10s.")
-      await self._backend.stop_all()
-      import subprocess
-      subprocess.Popen(
-        ["bash", "-c", "sleep 1 && systemctl --user restart seb.service"],
-        start_new_session=True,
-      )
       import sys
       sys.exit(0)
