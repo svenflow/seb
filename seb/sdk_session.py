@@ -203,6 +203,9 @@ class SDKSession:
       async for message in self._client.receive_messages():
         self._handle_message(message)
         if isinstance(message, ResultMessage):
+          # Reset to 0 (not decrement) because multiple queued queries are
+          # merged into a single turn by the SDK, producing one ResultMessage.
+          # This mirrors how dispatch handles merged turns.
           self._pending_queries = 0
           self._error_count = 0
     except asyncio.CancelledError:
