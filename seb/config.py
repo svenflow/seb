@@ -44,6 +44,10 @@ class Config:
   # Bot identity — used for group message filtering (case-insensitive)
   bot_name: str = field(default_factory=lambda: os.getenv("BOT_NAME", "seb"))
 
+  # Other bot/participant names that this bot should NOT respond to when they
+  # appear at the start of a group message (comma-separated via env var).
+  other_names: set[str] = field(default_factory=set)
+
   # Services
   memory_service_url: str = field(
     default_factory=lambda: os.getenv("MEMORY_SERVICE_URL", "http://localhost:7890")
@@ -57,6 +61,9 @@ class Config:
     raw_sig = os.getenv("TRUSTED_SIGNAL_NUMBERS", "")
     if raw_sig:
       self.trusted_signal_numbers = {x.strip() for x in raw_sig.split(",") if x.strip()}
+
+    raw_other = os.getenv("OTHER_NAMES", "sven")
+    self.other_names = {x.strip().lower() for x in raw_other.split(",") if x.strip()}
 
   def tier_for_telegram(self, user_id: int) -> str:
     if self.admin_telegram_id is not None and user_id == self.admin_telegram_id:
