@@ -74,6 +74,9 @@ class Manager:
       return
 
     if is_group:
+      if not self._is_relevant_group_message(text, tier):
+        logger.debug("Dropping irrelevant group message from %s: %r", sender_id, text[:50])
+        return
       await self._backend.inject_group_message(
         platform=platform,
         sender_id=sender_id,
@@ -89,6 +92,39 @@ class Manager:
         text=text,
         tier=tier,
       )
+
+  def _is_relevant_group_message(self, text: str, tier: str) -> bool:
+    """Check whether a group message is relevant to this bot.
+
+    Returns True if the message should be routed to the bot's session:
+    1. Message mentions the bot's name anywhere → always route
+    2. Message starts with another known name (word boundary) → always drop
+    3. Sender is admin and no specific name addressing → route
+    4. Otherwise → drop
+    """
+    cfg = get_config()
+    bot_name = cfg.bot_name
+    # Word-boundary match for the bot's name anywhere in the text
+    bot_pattern = re.compile(rf"\b{re.escape(bot_name)}\b", re.IGNORECASE)
+
+    # 1. Message mentions the bot anywhere → relevant
+    if bot_pattern.search(text):
+      return True
+
+    # 2. Message starts with another known name → directed at someone else, drop
+    stripped = text.strip()
+    first_word = stripped.split()[0].lower() if stripped else ""
+    # Strip trailing punctuation (comma, colon) from first word for matching
+    first_word_clean = first_word.rstrip(",:")
+    if first_word_clean and first_word_clean in cfg.other_names:
+      return False
+
+    # 3. Admin catch-all: route generic messages
+    if tier == "admin":
+      return True
+
+    # 4. Non-admin, no bot mention → irrelevant
+    return False
 
   async def _reply(self, platform: str, chat_id: str, text: str) -> None:
     """Send a reply via the registered reply function, if available."""
