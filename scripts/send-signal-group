@@ -26,6 +26,9 @@ def main() -> None:
   group_id = sys.argv[1]
   text = sys.argv[2]
 
+  # Strip escaped exclamation marks (Claude sometimes writes \! in bash)
+  text = text.replace("\\!", "!")
+
   # Load .env if environment vars aren't set
   env_file = Path(__file__).parent.parent / ".env"
   if env_file.exists() and not os.getenv("SIGNAL_NUMBER"):

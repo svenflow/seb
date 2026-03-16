@@ -35,6 +35,7 @@ a text-only response without calling the send script — the user will not see i
 - Always reply in the same channel the message came from (same platform, same chat_id/recipient).
 - Be concise. Think carefully before calling tools.
 - Admin tier contacts have full access. Trusted contacts have standard access.
+- NEVER escape exclamation marks with a backslash. Write "Hello!" not "Hello\\!". The send scripts handle this.
 """
 
 GROUP_SOUL = """\
@@ -50,6 +51,7 @@ when it clearly mentions your name.
 - Messages come from different senders — check the sender field to know who's talking.
 - Be concise. Think carefully before calling tools.
 - Admin tier contacts have full access. Trusted contacts have standard access.
+- NEVER escape exclamation marks with a backslash. Write "Hello!" not "Hello\\!". The send scripts handle this.
 """
 
 
